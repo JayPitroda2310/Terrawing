@@ -327,28 +327,30 @@ const generators = {
     return normalize(makeSeamless(out, 0.1), 0.6);
   },
   sirenLoop(): Float32Array {
-    // Two-tone emergency horn (hi-lo, 0.55 s per note): a driven horn — odd harmonics through a
-    // throaty resonance — with a little road/engine rumble underneath.
-    const note = 0.55;
-    const out = buffer(note * 4);
-    const noise = noiseSource(31);
-    const rumble = lowpass(120);
-    const horn = bandpass(1400, 1.2);
+    // Electronic "wail" siren: the tone sweeps up and down (≈650 → 1550 Hz, 3.6 s cycle) through
+    // a driven horn speaker — a strong fundamental with odd harmonics, clipped hard, then the
+    // speaker's resonance — so it cuts through rotor, wind and rain like the real thing.
+    const cycle = 3.6;
+    const out = buffer(cycle);
+    const horn = bandpass(1800, 0.9);
+    const body = lowpass(4200);
     let phase = 0;
     for (let i = 0; i < out.length; i++) {
       const t = i / SAMPLE_RATE;
-      const k = Math.floor(t / note) % 2;
-      const local = (t % note) / note;
-      // Notes glide into each other over a few ms, like a real compressor horn.
-      const f = (k === 0 ? 925 : 740) * (1 + 0.004 * Math.sin(TAU * 5.5 * t));
+      const u = (t % cycle) / cycle;
+      // Faster rise, slower fall, as on real wail sirens.
+      const sweep =
+        u < 0.42
+          ? Math.sin((u / 0.42) * (Math.PI / 2))
+          : Math.cos(((u - 0.42) / 0.58) * (Math.PI / 2));
+      const f = 650 + (1550 - 650) * sweep * sweep;
       phase += (TAU * f) / SAMPLE_RATE;
       let v = 0;
-      for (let h = 1; h <= 9; h += 2) v += Math.sin(phase * h) / h;
-      const edge = Math.min(1, local * 40, (1 - local) * 40);
-      const tone = Math.tanh(v * 1.8) * (0.85 + 0.15 * edge);
-      out[i] = tone * 0.6 + horn(tone) * 0.35 + rumble(noise()) * 0.25;
+      for (let h = 1; h <= 11; h += 2) v += Math.sin(phase * h) / h;
+      const driven = Math.tanh(v * 3.2);
+      out[i] = body(driven * 0.7 + horn(driven) * 0.6);
     }
-    return normalize(makeSeamless(out, 0.02), 0.8);
+    return normalize(makeSeamless(out, 0.01), 0.95);
   },
   radioStaticLoop(): Float32Array {
     const out = buffer(1.6);

@@ -18,6 +18,7 @@ import { formatDistance } from '@/utils/helpers/format';
 import { logger } from '@/utils/helpers/logger';
 import { IntervalGate } from '@/utils/performance/throttle';
 import { GameSession } from './GameSession';
+import { resetLoadProgress } from '@/services/loading/loadProgress';
 import { isMissionScreen, Screen } from './GameState';
 
 const TELEMETRY_INTERVAL = 0.1;
@@ -138,6 +139,8 @@ export class GameManager {
       store.setLastResult(null);
       store.setSession(session);
       this.bindSession(session);
+      // Fresh, data-weighted progress for this loading screen.
+      resetLoadProgress();
       this.navigate(Screen.LOADING);
     } catch (error) {
       logger.error('mission', 'Failed to create mission session', error);

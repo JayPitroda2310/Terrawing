@@ -374,7 +374,10 @@ export function HandoverScene({
   session: GameSession;
   getVisualRoot: () => Object3D | null;
 }) {
-  const [plan, setPlan] = useState<HandoverPlan | null>(null);
+  // Mount with the world (the standby plan exists from session creation): the ambulances' beacon
+  // lights must be in the scene when the loading screen compiles the shaders, or every lit
+  // material would need recompiling the moment they appeared.
+  const [plan, setPlan] = useState<HandoverPlan | null>(() => session.handover);
   const [version, setVersion] = useState(-1);
   useFrame(() => {
     if (session.handover !== plan) setPlan(session.handover);

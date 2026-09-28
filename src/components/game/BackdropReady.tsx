@@ -1,26 +1,32 @@
 import { useProgress } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
-import { useRef } from 'react';
+import { useMemo } from 'react';
+import { useLoadStore } from '@/services/loading/loadProgress';
+import { createWarmupGate, stepWarmupGate } from '@/services/loading/sceneWarmup';
+import { GRAPHICS_PROFILES } from '@/data/graphics';
+import { useSettingsStore } from '@/store/settingsStore';
 import { useGameStore } from '@/store/gameStore';
 
-/** Frames rendered after every load finishes (shaders compile in the first few), before reveal. */
-const SETTLE_FRAMES = 20;
+/** Frames rendered once the shaders are ready, before the menu is revealed. */
+const SETTLE_FRAMES = 6;
 
 /**
- * Signals when the menu backdrop is fully loaded and has rendered a few frames, so the website's
- * loading screen can lift onto a finished, smoothly running scene.
+ * Website loading: keeps the 3D menu backdrop undrawn while its files download and its shaders
+ * compile in the background (so the page and the loading bar stay responsive), then lets it
+ * render a few frames and signals that the loading screen can lift onto a smoothly running scene.
  */
 export function BackdropReady() {
-  const frames = useRef(0);
-  useFrame(() => {
+  const gate = useMemo(createWarmupGate, []);
+  useFrame(({ gl, scene, camera }) => {
     const store = useGameStore.getState();
-    if (store.backdropReady) return;
+    if (store.backdropReady || store.session) return;
     const { active, total } = useProgress.getState();
-    if (active || total === 0) {
-      frames.current = 0;
-      return;
-    }
-    if (++frames.current >= SETTLE_FRAMES) store.setBackdropReady(true);
+    const report = (build: number) => useLoadStore.setState({ build });
+    const bloom = GRAPHICS_PROFILES[useSettingsStore.getState().settings.graphics].bloom;
+    if (
+      stepWarmupGate(gate, gl, scene, camera, active || total === 0, SETTLE_FRAMES, report, bloom)
+    )
+      store.setBackdropReady(true);
   });
   return null;
 }

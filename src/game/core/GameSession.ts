@@ -194,6 +194,10 @@ export class GameSession {
     this.registerScanTargets();
     this.registerInteractions();
     this.signal.reset(spawnX, terrain.heightAt(spawnX, spawnZ), spawnZ);
+    // Standby ambulances exist from the start, so they load behind the loading screen rather
+    // than popping in (and compiling) during the opening shot.
+    this.handover = this.createStandby();
+    this.standbyChecked = true;
   }
 
   // ---------------------------------------------------------------------------------------------

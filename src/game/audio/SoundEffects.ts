@@ -40,9 +40,10 @@ export const SOUNDS = {
   siren: {
     synth: 'sirenLoop',
     category: 'sfx',
-    volume: 0.6,
+    volume: 1,
     loop: true,
-    spatial: { refDistance: 18, rolloff: 1, maxDistance: 900 },
+    // Carries a long way: full volume within ~60 m, fading gently beyond.
+    spatial: { refDistance: 60, rolloff: 0.55, maxDistance: 1500 },
   },
   radioStatic: { synth: 'radioStaticLoop', category: 'sfx', volume: 0.12, loop: true },
   thunder: { synth: 'thunder', category: 'ambient', volume: 0.75 },

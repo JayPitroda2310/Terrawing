@@ -9,8 +9,10 @@ import { ControlsIntro } from '@/ui/hud/ControlsIntro';
 import { HUD } from '@/ui/hud/HUD';
 import { detectWebGL } from '@/utils/performance/webgl';
 import { GameManagerContext } from './GameManagerContext';
-import { useProgress } from '@react-three/drei';
+import { installLoadTracking, overallPercent, useLoadStore } from '@/services/loading/loadProgress';
 import { WordmarkLoader } from '@/ui/common/WordmarkLoader';
+
+installLoadTracking();
 import { DebugPanel, SCREEN_ROUTES } from './routes';
 
 const MIN_WIDTH = 1280;
@@ -65,7 +67,7 @@ function GameShell() {
   const setFatalError = useGameStore((s) => s.setFatalError);
   const Overlay = SCREEN_ROUTES[screen];
   const backdropReady = useGameStore((s) => s.backdropReady);
-  const loadProgress = useProgress((s) => s.progress);
+  const loadProgress = useLoadStore(overallPercent);
   const showHud = session && isMissionScreen(screen) && screen !== Screen.LOADING;
 
   return (
