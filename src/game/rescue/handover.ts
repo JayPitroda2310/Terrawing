@@ -33,6 +33,9 @@ export interface HandoverPatient {
   slotX: number;
 }
 
+/** What a crew member is doing on a keyframe (drives their arms and posture). */
+export type CrewPose = 'walk' | 'push' | 'pull' | 'reach' | 'assess' | 'stand';
+
 export interface Key {
   t: number;
   x: number;
@@ -40,6 +43,10 @@ export interface Key {
   yaw: number;
   /** Height above the ground (trolley deck inside the ambulance). */
   lift: number;
+  /** Crew pose from this key until the next. */
+  pose?: CrewPose;
+  /** The mover comes to rest here (eased); false = keeps moving through (a waypoint). */
+  stop?: boolean;
 }
 
 export interface HandoverUnit {
@@ -68,6 +75,8 @@ export interface HandoverUnit {
   /** Capsule position across TerraWing's roof rack (its local X, m). */
   slotX: number;
   trolley: Key[];
+  /** Nurse tracks: [lead (pulls at the front), second (pushes)]. */
+  nurses: [Key[], Key[]];
   doctor: Key[];
 }
 
@@ -90,9 +99,10 @@ export const DEPART_TIME = 6.5;
 /** Ambulance centre → rear doors, trolley half length, door swing time. */
 export const AMBULANCE_REAR = 3.35;
 export const TROLLEY_HALF = 1.05;
-export const DOOR_SWING = 1;
-const WALK = 1.55;
-const PUSH = 1.3;
+export const DOOR_SWING = 0.8;
+/** Brisk emergency pace: pushing a loaded stretcher, and the doctor walking. */
+const PUSH = 1.8;
+const DOC_WALK = 2.1;
 /** Capsule deck height on the trolley, and the ambulance's floor above the ground. */
 export const TROLLEY_DECK = 0.92;
 export const BOX_FLOOR = 0.86;
@@ -105,6 +115,14 @@ const ROAD_SEARCH = 220;
 export const SLOT_X = 0.36;
 
 const yawOf = (dx: number, dz: number) => Math.atan2(dx, dz);
+
+type P = { x: number; z: number };
+const add = (p: P, dir: P, k: number): P => ({ x: p.x + dir.x * k, z: p.z + dir.z * k });
+const dist = (p: P, q: P) => Math.hypot(q.x - p.x, q.z - p.z);
+const unit_ = (from: P, to: P): P => {
+  const d = dist(from, to) || 1;
+  return { x: (to.x - from.x) / d, z: (to.z - from.z) / d };
+};
 
 /** Cubic Bézier from a (tangent ta) to b (tangent tb), sampled into points. */
 function bezier(
@@ -250,7 +268,9 @@ export function createHandoverPlan(input: HandoverInput): HandoverPlan {
     ux = (base.x - pad.x) / d;
     uz = (base.z - pad.z) / d;
   }
-  const edge = pad.radius + 2.6;
+  // Drive right up onto the pad, like a crew meeting an aircraft: close enough that the stretcher
+  // run is short, clear of wherever TerraWing sets down near the marker.
+  const edge = pad.radius * 0.6;
   const standOff = best ? Math.min(edge, Math.max(4, best.d - 1)) : edge;
   const px = pad.x + ux * standOff;
   const pz = pad.z + uz * standOff;
@@ -353,6 +373,7 @@ export function createHandoverPlan(input: HandoverInput): HandoverPlan {
       canopyClose: Infinity,
       slotX: 0,
       trolley: [],
+      nurses: [[], []],
       doctor: [],
     };
   });
@@ -408,9 +429,19 @@ export function dispatchUnits(
 }
 
 /**
- * Transfer choreography, once TerraWing is parked at `drover` (handover clock `now`): crews
- * leave their ambulances (or wait for them to arrive), roll trolleys alongside TerraWing, lift
- * the capsules off, assess, and load.
+ * Transfer choreography, once TerraWing is parked at `drover` (handover clock `now`). Each crew
+ * member has their own keyframed track with a pose per move, so what they do matches what they
+ * are trying to do:
+ *
+ * 1. Rear doors swing open; both nurses step down out of the back, the doctor follows.
+ * 2. One nurse pulls the stretcher out, walking backwards facing it; the other guides.
+ * 3. They roll it briskly to TerraWing — lead nurse pulling at the front, the other pushing —
+ *    while the doctor goes ahead to the patient's head.
+ * 4. The stretcher parks alongside; the nurses take stations on its far side, reach up to the
+ *    capsule's handles and draw it across and down onto the stretcher, stepping back as it comes.
+ * 5. The canopy opens and the doctor checks the patient; the canopy closes.
+ * 6. They roll it back and slide it in: one nurse climbs in first to guide, the other pushes and
+ *    climbs in last, the doctor gets in, and the doors shut.
  */
 export function planTransfer(
   plan: HandoverPlan,
@@ -419,129 +450,195 @@ export function planTransfer(
 ): void {
   plan.drover = { ...drover };
   const axisYaw = -drover.heading; // TerraWing's own model yaw (its nose faces -Z locally).
-  const axisX = Math.sin(drover.heading);
-  const axisZ = -Math.cos(drover.heading);
+  const a: P = { x: Math.sin(drover.heading), z: -Math.cos(drover.heading) };
   // TerraWing's lateral (local +X) direction, signed toward the ambulances.
-  let sideX = -axisZ;
-  let sideZ = axisX;
+  let side: P = { x: -a.z, z: a.x };
   let flip = 1;
-  if (sideX * plan.toward.x + sideZ * plan.toward.z < 0) {
-    sideX = -sideX;
-    sideZ = -sideZ;
+  if (side.x * plan.toward.x + side.z * plan.toward.z < 0) {
+    side = { x: -side.x, z: -side.z };
     flip = -1;
   }
+  const D: P = { x: drover.x, z: drover.z };
 
   plan.units.forEach((unit, k) => {
     if (!unit.dispatched) return;
     const at = pointAlong(plan.route, unit.sStop);
-    const vehicleYaw = yawOf(at.dx, at.dz);
-    const base = Math.max(unit.arrive, now) + k * 0.8;
-    const rearX = at.x - at.dx * AMBULANCE_REAR;
-    const rearZ = at.z - at.dz * AMBULANCE_REAR;
-    // Trolley: inside the box → out behind the doors → beside TerraWing (near side for the first
-    // patient, far side — round TerraWing's tail — for the second).
-    const inX = rearX + at.dx * (TROLLEY_HALF + 0.2);
-    const inZ = rearZ + at.dz * (TROLLEY_HALF + 0.2);
-    const outX = rearX - at.dx * (TROLLEY_HALF + 1.3);
-    const outZ = rearZ - at.dz * (TROLLEY_HALF + 1.3);
+    const d: P = { x: at.dx, z: at.dz };
+    const l: P = { x: d.z, z: -d.x };
+    const vehicleYaw = yawOf(d.x, d.z);
+    const rear = add({ x: at.x, z: at.z }, d, -AMBULANCE_REAR);
+    const inside = add(rear, d, TROLLEY_HALF + 0.25);
+    const outside = add(rear, d, -(TROLLEY_HALF + 1.1));
     // Work from the side of TerraWing the capsule is on (the ambulance side when centred).
     const sign = unit.slotX * flip < -0.01 ? -1 : 1;
-    const besideX = drover.x + sideX * BESIDE * sign;
-    const besideZ = drover.z + sideZ * BESIDE * sign;
-    const approachX = besideX + sideX * sign * 2.2;
-    const approachZ = besideZ + sideZ * sign * 2.2;
-    const via: Vec2Tuple[] =
-      sign > 0
-        ? []
-        : [
-            [drover.x - axisX * 3.4 + sideX * 2.4, drover.z - axisZ * 3.4 + sideZ * 2.4],
-            [drover.x - axisX * 3.4 - sideX * 2.4, drover.z - axisZ * 3.4 - sideZ * 2.4],
-          ];
+    const s: P = { x: side.x * sign, z: side.z * sign };
+    const beside = add(D, s, BESIDE);
+    const approach = add(beside, s, 2.0);
+    const via: P[] =
+      sign > 0 ? [] : [add(add(D, a, -3.4), side, 2.4), add(add(D, a, -3.4), side, -2.4)];
+    const facing = (p: P) => yawOf(p.x, p.z);
+    const back: P = { x: -s.x, z: -s.z };
+    const minusA: P = { x: -a.x, z: -a.z };
+    const END = TROLLEY_HALF + 0.35;
 
     const trolley: Key[] = [];
-    const key = (t: number, x: number, z: number, yaw: number, lift: number) =>
-      trolley.push({ t, x, z, yaw, lift });
-    const doorsOpen = base + 0.5;
-    const crewOut = doorsOpen + 0.6;
-    let t = doorsOpen + DOOR_SWING + 0.2;
-    key(t, inX, inZ, vehicleYaw, BOX_FLOOR);
-    t += 1.8;
-    key(t, outX, outZ, vehicleYaw, 0);
-    let lx = outX;
-    let lz = outZ;
-    for (const [x, z] of [...via, [approachX, approachZ] as Vec2Tuple]) {
-      const d = Math.hypot(x - lx, z - lz);
-      t += Math.max(1.2, d / WALK);
-      key(t, x, z, yawOf(x - lx, z - lz), 0);
-      lx = x;
-      lz = z;
-    }
-    t += 1.6;
-    key(t, besideX, besideZ, axisYaw, 0);
-    const liftStart = t + 0.5;
-    const liftEnd = liftStart + 2.6;
-    const canopyOpen = liftEnd + 0.3;
-    const canopyClose = canopyOpen + 5.2;
-    t = canopyClose + 1.4;
-    key(t, besideX, besideZ, axisYaw, 0);
-    t += 1.6;
-    key(t, approachX, approachZ, axisYaw, 0);
-    lx = approachX;
-    lz = approachZ;
-    for (const [x, z] of [...via.slice().reverse(), [outX, outZ] as Vec2Tuple]) {
-      const d = Math.hypot(x - lx, z - lz);
-      t += Math.max(1.2, d / PUSH);
-      key(t, x, z, yawOf(x - lx, z - lz), 0);
-      lx = x;
-      lz = z;
-    }
-    t += 1.3;
-    key(t, outX, outZ, vehicleYaw + Math.PI, 0);
-    t += 2;
-    key(t, inX, inZ, vehicleYaw + Math.PI, BOX_FLOOR);
-    const trolleyIn = t;
+    const n1: Key[] = [];
+    const n2: Key[] = [];
+    const doc: Key[] = [];
+    const put = (
+      track: Key[],
+      t: number,
+      p: P,
+      yaw: number,
+      lift = 0,
+      pose: CrewPose = 'walk',
+      stop = true,
+    ) => track.push({ t, x: p.x, z: p.z, yaw, lift, pose, stop });
 
-    // Doctor: out of the cab's passenger side, to the far end of the trolley, assesses the
-    // patient, walks back alongside and climbs in.
-    const cabX = at.x + at.dx * 1.6 + at.dz * 1.4;
-    const cabZ = at.z + at.dz * 1.6 - at.dx * 1.4;
-    const docX = besideX + sideX * sign * 1.0 + axisX * 0.6;
-    const docZ = besideZ + sideZ * sign * 1.0 + axisZ * 0.6;
-    const faceTrolley = yawOf(besideX - docX, besideZ - docZ);
-    const doctor: Key[] = [{ t: base + 0.4, x: cabX, z: cabZ, yaw: vehicleYaw, lift: 0 }];
-    let dt0 = base + 0.9;
-    let dx0 = cabX;
-    let dz0 = cabZ;
-    for (const [x, z] of [...via, [docX, docZ] as Vec2Tuple]) {
-      const d = Math.hypot(x - dx0, z - dz0);
-      dt0 += Math.max(1, d / WALK);
-      doctor.push({ t: dt0, x, z, yaw: yawOf(x - dx0, z - dz0), lift: 0 });
-      dx0 = x;
-      dz0 = z;
-    }
-    dt0 += 0.6;
-    doctor.push({ t: dt0, x: docX, z: docZ, yaw: faceTrolley, lift: 0 });
-    let back = Math.max(canopyClose + 1.4, dt0 + 0.5);
-    doctor.push({ t: back, x: docX, z: docZ, yaw: faceTrolley, lift: 0 });
-    for (const [x, z] of [...via.slice().reverse(), [cabX, cabZ] as Vec2Tuple]) {
-      const d = Math.hypot(x - dx0, z - dz0);
-      back += Math.max(1, d / WALK);
-      doctor.push({ t: back, x, z, yaw: yawOf(x - dx0, z - dz0), lift: 0 });
-      dx0 = x;
-      dz0 = z;
-    }
+    const t0 = Math.max(unit.arrive, now) + k * 0.6;
+    const doorsOpen = t0 + 0.2;
+    const crewOut = doorsOpen + 0.35;
+
+    // 1. Step down out of the back.
+    put(n1, crewOut, add(add(rear, d, 0.6), l, 0.42), vehicleYaw + Math.PI, BOX_FLOOR);
+    put(n2, crewOut + 0.1, add(add(rear, d, 0.6), l, -0.42), vehicleYaw + Math.PI, BOX_FLOOR);
+    const puller = add(rear, d, -0.1);
+    put(n1, crewOut + 0.6, puller, vehicleYaw, 0, 'push');
+    const guide = add(add(rear, d, -0.7), l, -1.05);
+    put(n2, crewOut + 0.8, guide, facing(l), 0, 'stand');
+
+    // 2. Stretcher out: pulled backwards out of the compartment.
+    const tS = crewOut + 0.65;
+    put(trolley, tS, inside, vehicleYaw, BOX_FLOOR);
+    put(n1, tS, puller, vehicleYaw, 0, 'push');
+    const tOut = tS + 1.0;
+    put(trolley, tOut, outside, vehicleYaw, 0);
+    put(n1, tOut, add(outside, d, -END), vehicleYaw, 0, 'push');
+    put(n2, tOut, guide, facing(l), 0, 'stand');
+
+    // 3. Roll it to TerraWing. Swivel toward the first leg, take ends, go.
+    const legs = [...via, approach];
+    const u0 = unit_(outside, legs[0]!);
+    let t = tOut + 0.5;
+    put(trolley, t, outside, facing(u0));
+    put(n1, t, add(outside, u0, END), facing(u0), 0, 'pull');
+    put(n2, t, add(outside, u0, -END), facing(u0), 0, 'push');
+    let from = outside;
+    legs.forEach((p, i) => {
+      const u = unit_(from, p);
+      t += Math.max(0.6, dist(from, p) / PUSH);
+      const last = i === legs.length - 1;
+      put(trolley, t, p, facing(u), 0, 'walk', last);
+      put(n1, t, add(p, u, END), facing(u), 0, 'pull', last);
+      put(n2, t, add(p, u, -END), facing(u), 0, 'push', last);
+      from = p;
+    });
+    // Crab it in alongside TerraWing, lined up with it.
+    t += Math.max(0.9, dist(approach, beside) / PUSH);
+    const tBeside = t;
+    put(trolley, t, beside, axisYaw);
+    put(n1, t, add(beside, a, END), facing(minusA), 0, 'push');
+    put(n2, t, add(beside, a, -END), facing(a), 0, 'push');
+
+    // 4. Stations on the far side, reach up, draw the capsule across and down onto the deck.
+    const station1 = add(add(beside, s, 0.72), a, 0.55);
+    const station2 = add(add(beside, s, 0.72), a, -0.55);
+    put(n1, t + 0.7, station1, facing(back), 0, 'stand');
+    put(n2, t + 0.7, station2, facing(back), 0, 'stand');
+    const liftStart = tBeside + 0.9;
+    const liftEnd = liftStart + 2.0;
+    put(n1, liftStart, station1, facing(back), 0, 'reach');
+    put(n2, liftStart, station2, facing(back), 0, 'reach');
+    put(n1, liftEnd, add(station1, s, 0.25), facing(back), 0, 'reach');
+    put(n2, liftEnd, add(station2, s, 0.25), facing(back), 0, 'reach');
+
+    // 5. Doctor's check under the open canopy.
+    const canopyOpen = liftEnd + 0.2;
+    const canopyClose = canopyOpen + 3.2;
+    put(n1, liftEnd + 0.4, add(station1, s, 0.25), facing(back), 0, 'stand');
+    put(n2, liftEnd + 0.4, add(station2, s, 0.25), facing(back), 0, 'stand');
+    const tReturn = canopyClose + 0.9;
+    put(n1, tReturn, add(station1, s, 0.25), facing(back), 0, 'stand');
+    put(n2, tReturn, add(station2, s, 0.25), facing(back), 0, 'stand');
+
+    // 6. Back out alongside, then roll home and slide it in.
+    t = tReturn + 0.6;
+    put(trolley, t, beside, axisYaw);
+    put(n1, t, add(beside, a, END), facing(minusA), 0, 'push');
+    put(n2, t, add(beside, a, -END), facing(a), 0, 'push');
+    t += Math.max(0.9, dist(beside, approach) / PUSH);
+    put(trolley, t, approach, axisYaw);
+    put(n1, t, add(approach, a, END), facing(minusA), 0, 'push');
+    put(n2, t, add(approach, a, -END), facing(a), 0, 'push');
+    const home = [...via.slice().reverse(), outside];
+    from = approach;
+    const uBack = unit_(approach, home[0]!);
+    t += 0.5;
+    put(trolley, t, approach, facing(uBack));
+    put(n1, t, add(approach, uBack, END), facing(uBack), 0, 'pull');
+    put(n2, t, add(approach, uBack, -END), facing(uBack), 0, 'push');
+    home.forEach((p, i) => {
+      const u = unit_(from, p);
+      t += Math.max(0.6, dist(from, p) / PUSH);
+      const last = i === home.length - 1;
+      put(trolley, t, p, facing(u), 0, 'walk', last);
+      put(n1, t, add(p, u, END), facing(u), 0, 'pull', last);
+      put(n2, t, add(p, u, -END), facing(u), 0, 'push', last);
+      from = p;
+    });
+    // Line up behind the doors: lead nurse steps up into the back, the other pushes it in.
+    t += 0.6;
+    put(trolley, t, outside, vehicleYaw);
+    put(n1, t, add(rear, d, -0.3), vehicleYaw + Math.PI, 0, 'push');
+    put(n2, t, add(outside, d, -END), vehicleYaw, 0, 'push');
+    put(n1, t + 0.5, add(rear, d, 0.9), vehicleYaw + Math.PI, BOX_FLOOR, 'push');
+    const tIn = t + 1.1;
+    put(trolley, tIn, inside, vehicleYaw, BOX_FLOOR);
+    put(n1, tIn, add(add(rear, d, 2.4), l, 0.5), vehicleYaw + Math.PI, BOX_FLOOR, 'stand');
+    put(n2, tIn, add(rear, d, -0.1), vehicleYaw, 0, 'push');
+    put(n2, tIn + 0.5, add(add(rear, d, 0.6), l, -0.45), vehicleYaw, BOX_FLOOR, 'walk');
+
+    // Doctor: out behind the nurses, ahead to the patient's head, check, and back in last.
+    const doorSide = add(add(rear, d, -0.8), l, 1.15);
+    put(doc, crewOut + 0.25, add(rear, d, 1.1), vehicleYaw + Math.PI, BOX_FLOOR);
+    put(doc, crewOut + 0.95, doorSide, vehicleYaw + Math.PI, 0);
+    const head = add(add(beside, a, TROLLEY_HALF + 0.45), s, 0.05);
+    let td = crewOut + 0.95;
+    from = doorSide;
+    [...via, head].forEach((p, i, all) => {
+      td += Math.max(0.5, dist(from, p) / DOC_WALK);
+      put(doc, td, p, facing(unit_(from, p)), 0, 'walk', i === all.length - 1);
+      from = p;
+    });
+    td = Math.max(td + 0.4, liftStart - 0.5);
+    put(doc, td, head, facing(minusA), 0, 'stand');
+    const tAssess = Math.max(td + 0.1, canopyOpen - 0.2);
+    put(doc, tAssess, head, facing(minusA), 0, 'assess');
+    const tDone = Math.max(tAssess + 0.3, canopyClose + 0.3);
+    put(doc, tDone, head, facing(minusA), 0, 'stand');
+    td = tDone + 0.3;
+    from = head;
+    [...via.slice().reverse(), doorSide].forEach((p, i, all) => {
+      td += Math.max(0.5, dist(from, p) / DOC_WALK);
+      put(doc, td, p, facing(unit_(from, p)), 0, 'walk', i === all.length - 1);
+      from = p;
+    });
+    const docWait = Math.max(td + 0.2, tIn + 0.3);
+    put(doc, docWait, doorSide, facing(d), 0, 'stand');
+    put(doc, docWait + 0.7, add(rear, d, 1.2), vehicleYaw, BOX_FLOOR, 'walk');
 
     unit.planned = true;
     unit.doorsOpen = doorsOpen;
     unit.crewOut = crewOut;
-    unit.crewIn = Math.max(trolleyIn + 1.2, back + 0.3);
-    unit.doorsClose = unit.crewIn + 0.2;
+    unit.crewIn = Math.max(n1.at(-1)!.t, n2.at(-1)!.t, doc.at(-1)!.t) + 0.1;
+    unit.doorsClose = unit.crewIn + 0.1;
     unit.liftStart = liftStart;
     unit.liftEnd = liftEnd;
     unit.canopyOpen = canopyOpen;
     unit.canopyClose = canopyClose;
     unit.trolley = trolley;
-    unit.doctor = doctor;
+    unit.nurses = [n1, n2];
+    unit.doctor = doc;
   });
 }
 
@@ -630,7 +727,19 @@ export function sampleKeys(keys: readonly Key[], t: number, out: Key): Key {
     const b = keys[i]!;
     if (t > b.t) continue;
     const a = keys[i - 1]!;
-    const k = smoothstep(0, 1, (t - a.t) / Math.max(1e-6, b.t - a.t));
+    const u = Math.min(1, Math.max(0, (t - a.t) / Math.max(1e-6, b.t - a.t)));
+    const startsFromRest = a.stop !== false;
+    const endsAtRest = b.stop !== false;
+    const k =
+      startsFromRest && endsAtRest
+        ? smoothstep(0, 1, u)
+        : startsFromRest
+          ? u * u * (2 - u) * 0.5 + u * 0.5
+          : endsAtRest
+            ? 1 - (1 - u) * (1 - u) * 0.5 - (1 - u) * 0.5
+            : u;
+    out.pose = a.pose;
+    out.stop = b.stop;
     out.t = t;
     out.x = a.x + (b.x - a.x) * k;
     out.z = a.z + (b.z - a.z) * k;

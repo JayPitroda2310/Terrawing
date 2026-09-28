@@ -49,8 +49,8 @@ describe('patient handover', () => {
     const arrived = ambulanceAt(p, u, u.arrive + 5, pose());
     expect(arrived.speed).toBe(0);
     const fromPad = Math.hypot(arrived.x - PAD.x, arrived.z - PAD.z);
-    expect(fromPad).toBeGreaterThan(PAD.radius);
-    expect(fromPad).toBeLessThan(PAD.radius + 5);
+    expect(fromPad).toBeGreaterThan(PAD.radius * 0.5);
+    expect(fromPad).toBeLessThan(PAD.radius);
   });
 
   it('keeps doors shut until TerraWing is parked, then runs the transfer', () => {
@@ -73,7 +73,7 @@ describe('patient handover', () => {
       const all = [u.start, u.arrive, u.doorsOpen, u.crewOut, u.liftStart, u.liftEnd];
       all.push(u.canopyOpen, u.canopyClose, u.crewIn, u.doorsClose);
       for (let i = 1; i < all.length; i++) expect(all[i]).toBeGreaterThanOrEqual(all[i - 1]!);
-      for (const track of [u.trolley, u.doctor])
+      for (const track of [u.trolley, u.doctor, ...u.nurses])
         for (let i = 1; i < track.length; i++) expect(track[i]!.t).toBeGreaterThan(track[i - 1]!.t);
     }
     scheduleDeparture(p, transferDoneAt(p) + 3);
@@ -82,6 +82,31 @@ describe('patient handover', () => {
     const parked = ambulanceAt(p, u, u.depart - 0.1, pose());
     const leaving = ambulanceAt(p, u, u.depart + 6, pose());
     expect(Math.hypot(leaving.x - parked.x, leaving.z - parked.z)).toBeGreaterThan(30);
+  });
+
+  it('runs the transfer briskly, with the crew where the job needs them', () => {
+    const p = standby();
+    dispatchUnits(p, [patient(0)], 0);
+    const u = p.units[0]!;
+    planTransfer(p, { x: 0, z: 0, heading: 0 }, u.arrive);
+    // Doors open to doors shut in well under half a minute.
+    expect(u.doorsClose - u.doorsOpen).toBeLessThan(30);
+    // During the lift the nurses stand on the far side of the stretcher, facing TerraWing.
+    const k = { t: 0, x: 0, z: 0, yaw: 0, lift: 0 };
+    const stretcher = sampleKeys(u.trolley, u.liftStart, { ...k });
+    for (const track of u.nurses) {
+      const nurse = sampleKeys(track, (u.liftStart + u.liftEnd) / 2, { ...k });
+      expect(nurse.pose).toBe('reach');
+      expect(Math.hypot(nurse.x, nurse.z)).toBeGreaterThan(Math.hypot(stretcher.x, stretcher.z));
+    }
+    // The doctor is at the patient's head, assessing, while the canopy is open.
+    const doc = sampleKeys(u.doctor, (u.canopyOpen + u.canopyClose) / 2, { ...k });
+    expect(doc.pose).toBe('assess');
+    // Everyone ends up back inside the ambulance (on its floor) before the doors shut.
+    for (const track of [...u.nurses, u.doctor]) {
+      expect(track.at(-1)!.lift).toBeGreaterThan(0.5);
+      expect(track.at(-1)!.t).toBeLessThanOrEqual(u.doorsClose);
+    }
   });
 
   it('only sends as many ambulances as there are patients', () => {
@@ -98,6 +123,6 @@ describe('patient handover', () => {
     dispatchUnits(p, [patient(0)], 0);
     const u = p.units[0]!;
     const arrived = ambulanceAt(p, u, u.arrive + 1, pose());
-    expect(Math.hypot(arrived.x - PAD.x, arrived.z - PAD.z)).toBeCloseTo(PAD.radius + 2.6, 0);
+    expect(Math.hypot(arrived.x - PAD.x, arrived.z - PAD.z)).toBeCloseTo(PAD.radius * 0.6, 0);
   });
 });

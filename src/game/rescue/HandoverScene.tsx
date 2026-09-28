@@ -9,13 +9,11 @@ import { smoothstep } from '@/utils/math/scalar';
 import { Ambulance } from './Ambulance';
 import { CasualtyCapsule } from './CasualtyCapsule';
 import {
-  AMBULANCE_REAR,
   type AmbulancePose,
-  ambulanceAt,
-  BOX_FLOOR,
   DOOR_SWING,
   type HandoverPlan,
   type HandoverUnit,
+  type CrewPose,
   type Key,
   sampleKeys,
   TROLLEY_DECK,
@@ -31,8 +29,6 @@ const DOCTOR_COAT = '#f1f2ef';
 const DOCTOR_TROUSERS = '#2b3340';
 const DOCTOR_HAIR = { color: '#2a1d15', hair: true };
 
-type CrewPose = 'walk' | 'push' | 'lift' | 'assess';
-
 interface CrewState {
   x: number;
   z: number;
@@ -40,21 +36,38 @@ interface CrewState {
   yaw: number;
   visible: boolean;
   pose: CrewPose;
+  /** While reaching for the capsule: 0 = up at the roof, 1 = down at the stretcher deck. */
+  reach: number;
 }
 
-const POSE_ARMS: Record<Exclude<CrewPose, 'walk'>, Record<string, Dir>> = {
+/** Arms reaching for the capsule's side handles, at the roof (up) and at the deck (down). */
+const REACH_UP: Record<string, Dir> = {
+  LeftArm: [0.2, 0.35, 1],
+  LeftForeArm: [0.04, 0.45, 1],
+  RightArm: [-0.2, 0.35, 1],
+  RightForeArm: [-0.04, 0.45, 1],
+  Spine: [0, 1, 0.05],
+};
+const REACH_DOWN: Record<string, Dir> = {
+  LeftArm: [0.2, -0.55, 0.8],
+  LeftForeArm: [0.04, -0.35, 1],
+  RightArm: [-0.2, -0.55, 0.8],
+  RightForeArm: [-0.04, -0.35, 1],
+  Spine: [0, 1, 0.25],
+};
+
+const POSE_ARMS: Record<Exclude<CrewPose, 'walk' | 'reach'>, Record<string, Dir>> = {
+  /** Walking ahead of the stretcher, one hand back on its handle. */
+  pull: {
+    RightArm: [-0.2, -0.85, -0.45],
+    RightForeArm: [-0.05, -0.8, -0.6],
+  },
+  stand: { ...ARMS_DOWN },
   push: {
     LeftArm: [0.22, -0.62, 0.75],
     LeftForeArm: [0.02, -0.3, 1],
     RightArm: [-0.22, -0.62, 0.75],
     RightForeArm: [-0.02, -0.3, 1],
-  },
-  lift: {
-    LeftArm: [0.18, -0.1, 1],
-    LeftForeArm: [0.04, 0.25, 1],
-    RightArm: [-0.18, -0.1, 1],
-    RightForeArm: [-0.04, 0.25, 1],
-    Spine: [0, 1, 0.12],
   },
   assess: {
     Spine: [0, 1, 0.3],
@@ -84,7 +97,7 @@ function CrewMember({
   const body = useRef<RapierRigidBody>(null);
   const visual = useRef<Group>(null);
   const state = useMemo<CrewState>(
-    () => ({ x: 0, z: 0, y: -100, yaw: 0, visible: false, pose: 'walk' }),
+    () => ({ x: 0, z: 0, y: -100, yaw: 0, visible: false, pose: 'walk', reach: 0 }),
     [],
   );
   const motion = useMemo(() => ({ x: NaN, z: NaN, speed: 0, phase: 0 }), []);
@@ -115,7 +128,17 @@ function CrewMember({
     const amount = Math.min(1, motion.speed / 1.1);
     const aims: Record<string, Dir> = gaitAims(motion.phase, amount, false);
     if (amount < 0.05) Object.assign(aims, ARMS_DOWN);
-    if (state.pose !== 'walk') Object.assign(aims, POSE_ARMS[state.pose]);
+    if (state.pose === 'reach') {
+      const k = state.reach;
+      for (const [name, up] of Object.entries(REACH_UP)) {
+        const down = REACH_DOWN[name]!;
+        aims[name] = [
+          up[0] + (down[0] - up[0]) * k,
+          up[1] + (down[1] - up[1]) * k,
+          up[2] + (down[2] - up[2]) * k,
+        ];
+      }
+    } else if (state.pose !== 'walk') Object.assign(aims, POSE_ARMS[state.pose]);
     for (const [name, direction] of Object.entries(aims)) {
       const bone = bones.get(name);
       if (bone) aimBone(group, bone, direction);
@@ -231,6 +254,7 @@ function HandoverUnitView({
   const tmp = useMemo(
     () => ({
       now: key(),
+      crew: key(),
       before: key(),
       at: key(),
       anchor: new Vector3(),
@@ -239,18 +263,7 @@ function HandoverUnitView({
     [],
   );
   const canopy = useMemo(() => ({ value: 0 }), []);
-  ambulanceAt(plan, unit, unit.arrive, tmp.park);
   const ground = (x: number, z: number) => session.terrain.heightAt(x, z);
-  /** Standing inside the ambulance body (between rear doors and cab)? Then on its floor. */
-  const floorAt = (x: number, z: number) => {
-    const p = tmp.park;
-    const fx = Math.sin(p.yaw);
-    const fz = Math.cos(p.yaw);
-    const along = (x - p.x) * fx + (z - p.z) * fz;
-    const across = Math.abs((x - p.x) * fz - (z - p.z) * fx);
-    const inside = along > -AMBULANCE_REAR + 0.1 && along < 1.2 && across < 1.1;
-    return ground(x, z) + (inside ? BOX_FLOOR : 0);
-  };
 
   useFrame(() => {
     const t = session.handoverTime;
@@ -275,8 +288,8 @@ function HandoverUnitView({
     const c = capsule.current;
     if (!c) return;
     canopy.value =
-      smoothstep(unit.canopyOpen, unit.canopyOpen + 1.2, t) *
-      (1 - smoothstep(unit.canopyClose, unit.canopyClose + 1.2, t));
+      smoothstep(unit.canopyOpen, unit.canopyOpen + 0.9, t) *
+      (1 - smoothstep(unit.canopyClose, unit.canopyClose + 0.9, t));
     const anchor = getAnchor();
     const droverYaw = -plan.drover.heading;
     if (anchor) anchor.localToWorld(tmp.anchor.set(unit.slotX, 0, 0));
@@ -291,7 +304,7 @@ function HandoverUnitView({
       const k = smoothstep(unit.liftStart, unit.liftEnd, t);
       c.position.set(
         tmp.anchor.x + (tmp.at.x - tmp.anchor.x) * k,
-        tmp.anchor.y + (deckY - tmp.anchor.y) * k + Math.sin(Math.PI * k) * 0.3,
+        tmp.anchor.y + (deckY - tmp.anchor.y) * k + Math.sin(Math.PI * Math.min(1, k * 1.6)) * 0.12,
         tmp.anchor.z + (tmp.at.z - tmp.anchor.z) * k,
       );
       c.rotation.y = droverYaw;
@@ -303,58 +316,23 @@ function HandoverUnitView({
     }
   });
 
-  /** Nurse at trolley `end` (+1 head / -1 foot). */
-  const medic = (end: 1 | -1) => (out: CrewState) => {
+  /** A crew member following their own track: position, heading, height and pose. */
+  const follow = (track: () => Key[]) => (out: CrewState) => {
     const t = session.handoverTime;
-    out.visible = unit.planned && t >= unit.crewOut && t < unit.crewIn;
-    if (!unit.planned) return;
-    sampleKeys(unit.trolley, t, tmp.now);
-    sampleKeys(unit.trolley, t - 0.15, tmp.before);
-    const vx = tmp.now.x - tmp.before.x;
-    const vz = tmp.now.z - tmp.before.z;
-    const moving = Math.hypot(vx, vz) > 0.03;
-    const lifting = t > unit.liftStart - 0.6 && t < unit.liftEnd + 0.3;
-    const ax = Math.sin(tmp.now.yaw);
-    const az = Math.cos(tmp.now.yaw);
-    if (lifting) {
-      // At the capsule's ends, between the trolley and TerraWing, reaching up for the handles.
-      const dx = plan.drover.x - tmp.now.x;
-      const dz = plan.drover.z - tmp.now.z;
-      const len = Math.hypot(dx, dz) || 1;
-      out.x = tmp.now.x + ax * end * (TROLLEY_HALF + 0.5) + (dx / len) * 0.25;
-      out.z = tmp.now.z + az * end * (TROLLEY_HALF + 0.5) + (dz / len) * 0.25;
-      out.yaw = Math.atan2(dx, dz);
-      out.pose = 'lift';
-    } else if (moving) {
-      const len = Math.hypot(vx, vz);
-      const dx = vx / len;
-      const dz = vz / len;
-      const lead = end === 1 ? 1 : -1;
-      out.x = tmp.now.x + dx * lead * (TROLLEY_HALF + 0.35);
-      out.z = tmp.now.z + dz * lead * (TROLLEY_HALF + 0.35);
-      out.yaw = Math.atan2(dx, dz);
-      out.pose = 'push';
-    } else {
-      out.x = tmp.now.x + ax * end * (TROLLEY_HALF + 0.4);
-      out.z = tmp.now.z + az * end * (TROLLEY_HALF + 0.4);
-      out.yaw = tmp.now.yaw + (end === 1 ? Math.PI : 0);
-      out.pose = 'push';
-    }
-    out.y = floorAt(out.x, out.z);
+    const keys = track();
+    out.visible = unit.planned && keys.length > 0 && t >= keys[0]!.t && t < keys.at(-1)!.t;
+    if (!out.visible) return;
+    sampleKeys(keys, t, tmp.crew);
+    out.x = tmp.crew.x;
+    out.z = tmp.crew.z;
+    out.yaw = tmp.crew.yaw;
+    out.y = ground(out.x, out.z) + tmp.crew.lift;
+    out.pose = tmp.crew.pose ?? 'walk';
+    out.reach = smoothstep(unit.liftStart, unit.liftEnd, t);
   };
-
-  const doctor = (out: CrewState) => {
-    const t = session.handoverTime;
-    const keys = unit.doctor;
-    out.visible = unit.planned && t >= keys[0]!.t && t < keys[keys.length - 1]!.t;
-    if (!unit.planned) return;
-    sampleKeys(keys, t, tmp.at);
-    out.x = tmp.at.x;
-    out.z = tmp.at.z;
-    out.yaw = tmp.at.yaw;
-    out.y = ground(out.x, out.z);
-    out.pose = t > unit.canopyOpen - 0.4 && t < unit.canopyClose + 0.6 ? 'assess' : 'walk';
-  };
+  const nurseLead = follow(() => unit.nurses[0]);
+  const nurseSecond = follow(() => unit.nurses[1]);
+  const doctor = follow(() => unit.doctor);
 
   return (
     <>
@@ -365,13 +343,13 @@ function HandoverUnitView({
       <group ref={capsule}>
         <CasualtyCapsule jacket={jacket} getCanopy={() => canopy.value} />
       </group>
-      {([1, -1] as const).map((end) => (
+      {[nurseLead, nurseSecond].map((getState, i) => (
         <CrewMember
-          key={end}
+          key={i}
           jacket={NURSE_SCRUBS}
           trousers={NURSE_SCRUBS}
           head={NURSE_CAP}
-          getState={medic(end)}
+          getState={getState}
         />
       ))}
       <CrewMember

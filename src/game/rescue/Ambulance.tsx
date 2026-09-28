@@ -792,7 +792,6 @@ export function Ambulance({
   const cab = useCabGeometry();
   const wheelParts = useWheelParts();
   const cabMaterials = useMemo<Material[]>(() => [m.cab, m.body, m.cabin], [m]);
-  const passenger = useRef<Group>(null);
   const body = useRef<RapierRigidBody>(null);
   const tilt = useRef<Group>(null);
   const wheels = useRef<(Group | null)[]>([]);
@@ -834,16 +833,6 @@ export function Ambulance({
     const y = (hf + hr + hl + hrt) / 4;
     m.wear.rootY.value = y;
     m.wear.wetness.value = session.vehicle.state.wetness;
-    // The doctor rides in the passenger seat, and is out of it while helping at TerraWing.
-    if (passenger.current) {
-      const keys = unit.doctor;
-      passenger.current.visible = !(
-        unit.planned &&
-        keys.length > 0 &&
-        t >= keys[0]!.t &&
-        t < keys[keys.length - 1]!.t
-      );
-    }
     body.current?.setNextKinematicTranslation({ x: pose.x, y, z: pose.z });
     body.current?.setNextKinematicRotation(quat.setFromAxisAngle(UP, pose.yaw));
 
@@ -966,12 +955,9 @@ export function Ambulance({
           </group>
         ))}
         <Suspense fallback={null}>
-          {/* Driver (right-hand drive) in paramedic green; the doctor rides alongside. */}
+          {/* Driver (right-hand drive) in paramedic green; the doctor rides in the back. */}
           <group position={[-0.45, 0.72, 1.5]}>
             <SurvivorModel pose="sitting" jacket="#2f7a44" isCalm={() => true} />
-          </group>
-          <group ref={passenger} position={[0.45, 0.72, 1.5]}>
-            <SurvivorModel pose="sitting" jacket="#f1f2ef" isCalm={() => true} />
           </group>
         </Suspense>
         {/* Wipers parked along the base of the windscreen. */}
