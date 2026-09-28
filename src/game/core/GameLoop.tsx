@@ -18,6 +18,8 @@ const WARMUP_FRAMES = 8;
  */
 export function GameLoop({ session, manager }: { session: GameSession; manager: GameManager }) {
   const warmup = useRef(0);
+  /** Parallel shader pre-compilation: idle → running → done. */
+  const compile = useRef<'idle' | 'running' | 'done'>('idle');
   const director = useMemo(() => new GameAudioDirector(session, manager.audio), [session, manager]);
   const forward = useMemo(() => new Vector3(), []);
   const listener = useMemo(() => ({ x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: -1 }), []);
@@ -28,10 +30,18 @@ export function GameLoop({ session, manager }: { session: GameSession; manager: 
     session.fixedUpdate(world.timestep);
   });
 
-  useFrame(({ camera }, dt) => {
+  useFrame(({ camera, gl, scene }, dt) => {
     manager.onFrame(dt);
 
     if (useGameStore.getState().screen === Screen.LOADING && session.ready) {
+      // Compile every material the world uses, in parallel, before the player takes over.
+      if (compile.current === 'idle') {
+        compile.current = 'running';
+        gl.compileAsync(scene, camera)
+          .catch(() => undefined)
+          .finally(() => (compile.current = 'done'));
+      }
+      if (compile.current !== 'done') return;
       warmup.current++;
       if (warmup.current >= WARMUP_FRAMES) manager.onWorldReady(session);
     }
