@@ -695,14 +695,21 @@ export class GameSession {
       this.terrain.data.paths.filter((p) => p.kind === kind).map((p) => p.line);
     const roads = lines('road');
     const normal = { x: 0, y: 1, z: 0 };
+    const medical = this.environment.structures.find((st) => st.id.includes('medical'));
     const obstacles = this.environment.structures
       .filter((st) => st.kind !== 'flag' && st.kind !== 'windsock')
       .map((st) => ({ x: st.position[0], z: st.position[1], r: 6 * st.scale }));
     return createHandoverPlan({
       pad: { x: pad.position.x, z: pad.position.z, radius: pad.definition.radius },
       base: { x: base.position.x, z: base.position.z, radius: base.definition.radius },
+      parkNear: medical ? { x: medical.position[0], z: medical.position[1] } : undefined,
       roads: roads.length > 0 ? roads : lines('trail'),
       units: injured,
+      avoid: obstacles
+        .filter(
+          (o) => Math.hypot(o.x - pad.position.x, o.z - pad.position.z) > pad.definition.radius,
+        )
+        .map((o) => ({ ...o, r: o.r * 0.8 })),
       isClear: (x, z) => {
         if (this.terrain.waterLevelAt(x, z) !== null) return false;
         this.terrain.normalAt(x, z, normal);

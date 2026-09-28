@@ -157,10 +157,14 @@ export interface HandoverInput {
   pad: { x: number; z: number; radius: number };
   /** The rescue base, where the ambulances wait on standby. */
   base: { x: number; z: number; radius: number };
+  /** Park beside this (the medical tent) rather than on a ring round the base centre. */
+  parkNear?: { x: number; z: number };
   /** Road centrelines (world XZ); the nearest to the pad is used. Empty → cross-country. */
   roads: readonly Polyline[];
   /** How many ambulances are on standby (one per casualty expected to need transport). */
   units: number;
+  /** Structures the route must steer round (centre and clearance radius). */
+  avoid?: readonly { x: number; z: number; r: number }[];
   /** Is this a good place to park (flat, dry, clear of tents and buildings)? */
   isClear?: (x: number, z: number) => boolean;
 }
@@ -180,7 +184,9 @@ function chooseParking(
   const lead = Math.atan2(toward.z - base.z, toward.x - base.x);
   let best: { x: number; z: number; fx: number; fz: number } | null = null;
   let bestScore = -Infinity;
-  for (const radius of [base.radius + 7, base.radius + 11, base.radius + 16]) {
+  const rings =
+    base.radius === 0 ? [7.5, 9.5, 12] : [base.radius + 7, base.radius + 11, base.radius + 16];
+  for (const radius of rings) {
     for (let k = 0; k < 24; k++) {
       const angle = lead + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 12);
       const x = base.x + Math.cos(angle) * radius;
@@ -250,7 +256,8 @@ export function createHandoverPlan(input: HandoverInput): HandoverPlan {
   const pz = pad.z + uz * standOff;
 
   const column = (count - 1) * CONVOY_GAP;
-  const parking = chooseParking(base, pad, column + 7, input.isClear ?? (() => true));
+  const anchor = input.parkNear ? { x: input.parkNear.x, z: input.parkNear.z, radius: 0 } : base;
+  const parking = chooseParking(anchor, pad, column + 7, input.isClear ?? (() => true));
   // The rear-most ambulance starts the route; the lead one is `column` metres further on.
   const startX = parking.x - parking.fx * column;
   const startZ = parking.z - parking.fz * column;
@@ -305,6 +312,18 @@ export function createHandoverPlan(input: HandoverInput): HandoverPlan {
     fz = (pz - parking.z) / d;
     points.push(...bezier(parking.x, parking.z, parking.fx, parking.fz, px, pz, fx, fz, d * 0.4));
     for (let s = 6; s <= 220; s += 6) points.push([px + fx * s, pz + fz * s]);
+  }
+  // Steer round base structures (masts, containers, tents): push route points clear of them.
+  for (const point of points) {
+    for (const o of input.avoid ?? []) {
+      const dx = point[0] - o.x;
+      const dz = point[1] - o.z;
+      const d = Math.hypot(dx, dz);
+      if (d < o.r && d > 1e-3) {
+        (point as [number, number])[0] = o.x + (dx / d) * o.r;
+        (point as [number, number])[1] = o.z + (dz / d) * o.r;
+      }
+    }
   }
   const route = createPolyline(points);
   const park = createProjection();

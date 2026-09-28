@@ -22,6 +22,7 @@ import {
   Vector3,
 } from 'three';
 import type { GameSession } from '@/game/core/GameSession';
+import { smoothstep } from '@/utils/math/scalar';
 import { applyWear, createWearUniforms } from '@/game/terrawing/vehicleWear';
 import { SurvivorModel } from './SurvivorModel';
 import {
@@ -317,6 +318,7 @@ function useCabGeometry() {
     geometry.dispose();
     cabGeometry.rotateY(-Math.PI / 2);
     cabGeometry.translate(depth / 2, 0, 0);
+    shapeCab(cabGeometry);
     cabGeometry.computeVertexNormals();
     // Door glass behind the A-pillar.
     const win = new Shape();
@@ -325,8 +327,14 @@ function useCabGeometry() {
     win.lineTo(1.97, 2.2);
     win.lineTo(1.22, 2.2);
     win.lineTo(1.22, 1.46);
-    const window = new ShapeGeometry(win);
-    window.rotateY(-Math.PI / 2);
+    // One glass pane per side, following the cab's shaping (so it sits on the door).
+    const windows = ([-1, 1] as const).map((sx) => {
+      const pane = new ShapeGeometry(win);
+      pane.rotateY(-Math.PI / 2);
+      pane.translate(sx * (CAB_WIDTH / 2 + 0.052), 0, 0);
+      shapeCab(pane);
+      return pane;
+    });
     // Side skirts under the patient compartment, cut round the rear wheels.
     const skirt = new Shape();
     const bottom = 0.44;
@@ -341,8 +349,28 @@ function useCabGeometry() {
     skirt.lineTo(BOX.rear + 0.05, bottom);
     const skirtGeometry = new ShapeGeometry(skirt, 12);
     skirtGeometry.rotateY(-Math.PI / 2);
-    return { geometry: cabGeometry, window, skirt: skirtGeometry };
+    return { geometry: cabGeometry, windows, skirt: skirtGeometry };
   }, []);
+}
+
+/**
+ * Van shaping, applied after extrusion (vehicle space: +Z forward, X across): the cab narrows
+ * toward a rounded nose in plan view and leans inward above the waistline (tumblehome), instead
+ * of being a straight-sided slab.
+ */
+function shapeCab(geometry: BufferGeometry): void {
+  const position = geometry.getAttribute('position') as BufferAttribute;
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const nose = smoothstep(2.75, 3.4, z);
+    const upper = smoothstep(1.5, 2.45, y);
+    const roofFront = smoothstep(2.0, 2.45, y) * smoothstep(1.7, 2.1, z);
+    const k = 1 - 0.1 * nose * nose - 0.07 * upper - 0.03 * roofFront;
+    position.setX(i, x * k);
+  }
+  position.needsUpdate = true;
 }
 
 /**
@@ -466,7 +494,7 @@ export function Ambulance({
     () => () => {
       for (const material of Object.values(m)) if (material instanceof Material) material.dispose();
       cab.geometry.dispose();
-      cab.window.dispose();
+      for (const pane of cab.windows) pane.dispose();
       cab.skirt.dispose();
     },
     [m, cab],
@@ -566,17 +594,30 @@ export function Ambulance({
         />
         {/* Cab. */}
         <mesh geometry={cab.geometry} material={cabMaterials} castShadow receiveShadow />
-        {sides.map((sx) => (
-          <mesh
-            key={`w${sx}`}
-            geometry={cab.window}
-            material={m.window}
-            position={[sx * (CAB_WIDTH / 2 + 0.002), 0, 0]}
-          />
+        {cab.windows.map((pane, i) => (
+          <mesh key={`w${i}`} geometry={pane} material={m.window} />
         ))}
-        <mesh material={m.glass} position={[0, 1.83, 2.33]} rotation={[-0.585, 0, 0]}>
-          <planeGeometry args={[CAB_WIDTH - 0.16, 1.1]} />
-        </mesh>
+        {/* Windscreen: on the raked A-pillar line, just proud of the rounded cab edge, with
+            black rubber seals round it. */}
+        <group position={[0, 1.855, 2.35]} rotation={[-0.588, 0, 0]}>
+          <mesh material={m.glass}>
+            <planeGeometry args={[CAB_WIDTH - 0.26, 1.02]} />
+          </mesh>
+          {[-1, 1].map((sy) => (
+            <mesh key={`sealh${sy}`} material={m.plastic} position={[0, sy * 0.52, 0.004]}>
+              <boxGeometry args={[CAB_WIDTH - 0.22, 0.035, 0.012]} />
+            </mesh>
+          ))}
+          {[-1, 1].map((sx) => (
+            <mesh
+              key={`sealv${sx}`}
+              material={m.plastic}
+              position={[sx * (CAB_WIDTH / 2 - 0.12), 0, 0.004]}
+            >
+              <boxGeometry args={[0.035, 1.06, 0.012]} />
+            </mesh>
+          ))}
+        </group>
         {/* Cab interior seen through the side windows: dashboard, wheel, seats, crew. */}
         <mesh material={m.cabin} position={[0, 1.38, 2.36]} rotation={[-0.35, 0, 0]}>
           <boxGeometry args={[CAB_WIDTH - 0.2, 0.2, 0.45]} />
@@ -749,7 +790,7 @@ export function Ambulance({
                 material={m.body}
                 position={[(sx * BOX.width) / 2, 0, (sz * BOX_LENGTH) / 2]}
               >
-                <cylinderGeometry args={[0.05, 0.05, BOX_HEIGHT, 10]} />
+                <cylinderGeometry args={[0.09, 0.09, BOX_HEIGHT, 16]} />
               </mesh>
             )),
           )}
@@ -763,6 +804,29 @@ export function Ambulance({
           <mesh material={m.body} position={[0, 0, BOX_LENGTH / 2]}>
             <boxGeometry args={[BOX.width, BOX_HEIGHT, 0.05]} />
           </mesh>
+          {/* Aerodynamic cap over the cab roof. */}
+          <RoundedBox
+            args={[BOX.width + 0.02, BOX.top - 2.44 + 0.04, 0.42]}
+            radius={0.16}
+            smoothness={5}
+            position={[0, BOX_HEIGHT / 2 - (BOX.top - 2.44) / 2 + 0.02, BOX_LENGTH / 2 + 0.12]}
+            material={m.body}
+            castShadow
+          />
+          {/* Side-door handle and grab rail (near side). */}
+          {sides.map((sx) => (
+            <group
+              key={`door${sx}`}
+              position={[(sx * BOX.width) / 2 + sx * 0.035, 0, BOX_LENGTH / 2 - 1.05]}
+            >
+              <mesh material={m.chrome} position={[0, -0.12, 0.35]}>
+                <boxGeometry args={[0.025, 0.05, 0.2]} />
+              </mesh>
+              <mesh material={m.chrome} position={[0, 0.1, -0.52]}>
+                <cylinderGeometry args={[0.015, 0.015, 0.9, 8]} />
+              </mesh>
+            </group>
+          ))}
           <mesh material={m.floor} position={[0, -BOX_HEIGHT / 2 + 0.03, 0]}>
             <boxGeometry args={[BOX.width - 0.06, 0.06, BOX_LENGTH]} />
           </mesh>
