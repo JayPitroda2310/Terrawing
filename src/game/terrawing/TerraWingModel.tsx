@@ -625,24 +625,6 @@ function Hull({ materials }: { materials: VehicleMaterials }) {
           <cylinderGeometry args={[0.012, 0.012, 0.008, 6]} />
         </mesh>
       ))}
-      {/* Cooling louvres on the flanks, behind the front wheels. */}
-      {[-1, 1].map((side) => (
-        <group key={`vent${side}`} position={[side * 0.753, 0.13, -0.28]}>
-          <mesh material={materials.trim} rotation={[0, (side * Math.PI) / 2, 0]}>
-            <planeGeometry args={[0.36, 0.1]} />
-          </mesh>
-          {[-0.035, 0, 0.035].map((y) => (
-            <mesh
-              key={y}
-              material={materials.shell}
-              position={[side * 0.006, y, 0]}
-              rotation={[side * 0.5, 0, 0]}
-            >
-              <boxGeometry args={[0.012, 0.012, 0.34]} />
-            </mesh>
-          ))}
-        </group>
-      ))}
       {/* Nose sensor housing, bumper and camera gimbal */}
       <RoundedBox
         args={[0.92, 0.3, 0.5]}
