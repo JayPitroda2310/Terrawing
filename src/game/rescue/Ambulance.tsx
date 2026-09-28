@@ -15,6 +15,7 @@ import {
   ExtrudeGeometry,
   Material,
   Path,
+  PlaneGeometry,
   type Group,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
@@ -94,6 +95,55 @@ function starOfLife(ctx: CanvasRenderingContext2D, x: number, y: number, r: numb
   ctx.bezierCurveTo(r * 0.25, r * 0.15, -r * 0.25, r * 0.3, 0, r * 0.45);
   ctx.stroke();
   ctx.restore();
+}
+
+/**
+ * Windscreen texture (RGBA): mostly clear with a light blue-grey tint, a darker shade band along
+ * the top, and a black ceramic frit border that dissolves into dots toward the glass.
+ */
+function createWindscreenTexture(): CanvasTexture {
+  const w = 512;
+  const h = 256;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = 'rgba(20, 32, 38, 0.24)';
+  ctx.fillRect(0, 0, w, h);
+  const band = ctx.createLinearGradient(0, 0, 0, h * 0.22);
+  band.addColorStop(0, 'rgba(18, 40, 58, 0.78)');
+  band.addColorStop(1, 'rgba(18, 40, 58, 0)');
+  ctx.fillStyle = band;
+  ctx.fillRect(0, 0, w, h * 0.22);
+  // Solid frit border, then a dot fade.
+  const border = 12;
+  ctx.fillStyle = 'rgba(8, 9, 10, 1)';
+  ctx.fillRect(0, 0, w, border);
+  ctx.fillRect(0, h - border, w, border);
+  ctx.fillRect(0, 0, border, h);
+  ctx.fillRect(w - border, 0, border, h);
+  for (let ring = 0; ring < 4; ring++) {
+    const inset = border + 3 + ring * 5;
+    const radius = 1.9 - ring * 0.4;
+    for (let x = inset; x < w - inset; x += 5) {
+      for (const y of [inset, h - inset]) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    for (let y = inset; y < h - inset; y += 5) {
+      for (const x of [inset, w - inset]) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  const texture = new CanvasTexture(c);
+  texture.colorSpace = SRGBColorSpace;
+  texture.anisotropy = 8;
+  return texture;
 }
 
 /** Canvas px per metre on the box sides. */
@@ -275,6 +325,19 @@ function useAmbulanceMaterials() {
       }),
       cabin: new MeshStandardMaterial({ color: '#23272b', roughness: 0.85 }),
       seat: new MeshStandardMaterial({ color: '#2f3438', roughness: 0.9 }),
+      /** Windscreen: clear glass with a black ceramic frit border and a tinted top band. */
+      windscreen: new MeshPhysicalMaterial({
+        map: createWindscreenTexture(),
+        transparent: true,
+        roughness: 0.02,
+        metalness: 0,
+        clearcoat: 1,
+        clearcoatRoughness: 0.02,
+        envMapIntensity: 1.6,
+        side: DoubleSide,
+        depthWrite: false,
+      }),
+      cabinLiner: new MeshStandardMaterial({ color: '#1b1e21', roughness: 0.9, side: BackSide }),
       headlight: lamp('#f4f6f8', '#fff3dc', 1.6),
       indicator: lamp('#6a4300', '#ffa21a', 0.2),
       tail: lamp('#4a0806', '#ff1a0c', 0.7),
@@ -335,8 +398,9 @@ function useCabGeometry() {
       bevelSize: 0.05,
       bevelSegments: 4,
       curveSegments: 20,
+      steps: 14,
     });
-    const cabGeometry = splitWindowReveals(geometry);
+    const cabGeometry = splitWindowReveals(geometry, depth);
     geometry.dispose();
     cabGeometry.rotateY(-Math.PI / 2);
     cabGeometry.translate(depth / 2, 0, 0);
@@ -357,6 +421,26 @@ function useCabGeometry() {
       shapeCab(pane);
       return pane;
     });
+    // Windscreen glass filling the opening between the A-pillars, following the cab's shaping.
+    const windscreen = new PlaneGeometry(depth - 0.2, WINDSCREEN_LENGTH + 0.04, 8, 4);
+    windscreen.rotateX(-WINDSCREEN_RAKE);
+    windscreen.translate(0, WINDSCREEN_MID.y + 0.01, WINDSCREEN_MID.z + 0.015);
+    shapeCab(windscreen);
+    // Cabin liner: the cab profile inset and extruded narrower, drawn from the inside only
+    // (back faces), so the cab reads as a dark interior through the glass — never see-through.
+    const inner = new Shape();
+    inner.moveTo(1.12, 0.64);
+    inner.lineTo(2.98, 0.64);
+    inner.lineTo(2.98, 1.08);
+    inner.lineTo(2.56, 1.3);
+    inner.lineTo(1.94, 2.24);
+    inner.lineTo(1.12, 2.24);
+    inner.lineTo(1.12, 0.64);
+    const liner = new ExtrudeGeometry(inner, { depth: depth - 0.26, bevelEnabled: false });
+    liner.rotateY(-Math.PI / 2);
+    liner.translate((depth - 0.26) / 2, 0, 0);
+    shapeCab(liner);
+    liner.computeVertexNormals();
     // Side skirts under the patient compartment, cut round the rear wheels.
     const skirt = new Shape();
     const bottom = 0.44;
@@ -371,7 +455,7 @@ function useCabGeometry() {
     skirt.lineTo(BOX.rear + 0.05, bottom);
     const skirtGeometry = new ShapeGeometry(skirt, 12);
     skirtGeometry.rotateY(-Math.PI / 2);
-    return { geometry: cabGeometry, windows, skirt: skirtGeometry };
+    return { geometry: cabGeometry, windows, windscreen, liner, skirt: skirtGeometry };
   }, []);
 }
 
@@ -395,12 +479,27 @@ function shapeCab(geometry: BufferGeometry): void {
   position.needsUpdate = true;
 }
 
+/** Windscreen line on the cab profile (z, y), from the scuttle up to the roof header. */
+const WS_A = { x: 2.62, y: 1.34 };
+const WS_B = { x: 1.98, y: 2.3 };
+const WS_D = { x: WS_B.x - WS_A.x, y: WS_B.y - WS_A.y };
+const WS_LEN = Math.hypot(WS_D.x, WS_D.y);
+const WINDSCREEN_LENGTH = WS_LEN;
+const WINDSCREEN_RAKE = Math.atan2(-WS_D.x, WS_D.y);
+/** Mid-point, pushed out by the cab's rounded edge so the glass sits on the body line. */
+const WINDSCREEN_MID = {
+  z: (WS_A.x + WS_B.x) / 2 + (WS_D.y / WS_LEN) * 0.05,
+  y: (WS_A.y + WS_B.y) / 2 + (-WS_D.x / WS_LEN) * 0.05,
+};
+/** A-pillar width left either side of the opening (extrusion depth units). */
+const PILLAR = 0.13;
+
 /**
  * Re-groups an extruded cab so the walls of the window openings get their own (dark interior)
  * material: group 0 caps (livery), 1 outer walls (paint), 2 window reveals. Reveal walls face
  * the opening, i.e. their normal points toward the window's centre.
  */
-function splitWindowReveals(source: ExtrudeGeometry): BufferGeometry {
+function splitWindowReveals(source: ExtrudeGeometry, depth: number): BufferGeometry {
   const geometry = source.index ? source.toNonIndexed() : source.clone();
   const position = geometry.getAttribute('position') as BufferAttribute;
   const normal = geometry.getAttribute('normal') as BufferAttribute;
@@ -419,12 +518,26 @@ function splitWindowReveals(source: ExtrudeGeometry): BufferGeometry {
     let cy = 0;
     let nx = 0;
     let ny = 0;
+    let cz = 0;
     for (let k = 0; k < 3; k++) {
       cx += position.getX(v + k) / 3;
       cy += position.getY(v + k) / 3;
+      cz += position.getZ(v + k) / 3;
       nx += normal.getX(v + k);
       ny += normal.getY(v + k);
     }
+    // Windscreen: the raked wall between the A-pillars is open (glass goes in its place).
+    const along = ((cx - WS_A.x) * WS_D.x + (cy - WS_A.y) * WS_D.y) / WS_LEN;
+    const off = Math.abs((cx - WS_A.x) * WS_D.y - (cy - WS_A.y) * WS_D.x) / WS_LEN;
+    if (
+      along > 0.02 &&
+      along < WS_LEN - 0.02 &&
+      off < 0.08 &&
+      nx > 0 &&
+      cz > PILLAR &&
+      cz < depth - PILLAR
+    )
+      continue;
     const facesOpening = nx * (centre.x - cx) + ny * (centre.y - cy) > 0;
     (inWindow(cx, cy) && facesOpening ? reveal : order).push(v);
   }
@@ -699,6 +812,8 @@ export function Ambulance({
       for (const material of Object.values(m)) if (material instanceof Material) material.dispose();
       cab.geometry.dispose();
       for (const pane of cab.windows) pane.dispose();
+      cab.windscreen.dispose();
+      cab.liner.dispose();
       for (const part of Object.values(wheelParts)) if (typeof part !== 'number') part.dispose();
       cab.skirt.dispose();
     },
@@ -802,27 +917,24 @@ export function Ambulance({
         {cab.windows.map((pane, i) => (
           <mesh key={`w${i}`} geometry={pane} material={m.window} />
         ))}
-        {/* Windscreen: on the raked A-pillar line, just proud of the rounded cab edge, with
-            black rubber seals round it. */}
-        <group position={[0, 1.855, 2.35]} rotation={[-0.588, 0, 0]}>
-          <mesh material={m.glass}>
-            <planeGeometry args={[CAB_WIDTH - 0.26, 1.02]} />
+        {/* Windscreen: real glass in the opening between the A-pillars; the dark cabin, the
+            dashboard, wheel and crew show through it. */}
+        <mesh geometry={cab.liner} material={m.cabinLiner} />
+        <mesh geometry={cab.windscreen} material={m.windscreen} renderOrder={3} />
+        {/* Rear-view mirror and sun visors behind the glass. */}
+        <mesh material={m.plastic} position={[0, 2.12, 2.02]} rotation={[-0.3, 0, 0]}>
+          <boxGeometry args={[0.26, 0.07, 0.03]} />
+        </mesh>
+        {[-0.42, 0.42].map((x) => (
+          <mesh
+            key={`visor${x}`}
+            material={m.seat}
+            position={[x, 2.22, 1.93]}
+            rotation={[-0.9, 0, 0]}
+          >
+            <boxGeometry args={[0.6, 0.02, 0.2]} />
           </mesh>
-          {[-1, 1].map((sy) => (
-            <mesh key={`sealh${sy}`} material={m.plastic} position={[0, sy * 0.52, 0.004]}>
-              <boxGeometry args={[CAB_WIDTH - 0.22, 0.035, 0.012]} />
-            </mesh>
-          ))}
-          {[-1, 1].map((sx) => (
-            <mesh
-              key={`sealv${sx}`}
-              material={m.plastic}
-              position={[sx * (CAB_WIDTH / 2 - 0.12), 0, 0.004]}
-            >
-              <boxGeometry args={[0.035, 1.06, 0.012]} />
-            </mesh>
-          ))}
-        </group>
+        ))}
         {/* Cab interior seen through the side windows: dashboard, wheel, seats, crew. */}
         <mesh material={m.cabin} position={[0, 1.38, 2.36]} rotation={[-0.35, 0, 0]}>
           <boxGeometry args={[CAB_WIDTH - 0.2, 0.2, 0.45]} />
