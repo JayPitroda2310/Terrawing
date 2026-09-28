@@ -53,7 +53,7 @@ export type PathDefinition = z.infer<typeof pathSchema>;
 
 const regionSchema = z.object({
   id: z.string(),
-  kind: z.enum(['forest', 'landslide', 'clearing', 'mud', 'rocky']),
+  kind: z.enum(['forest', 'landslide', 'clearing', 'mud', 'rocky', 'burnt']),
   center: vec2Schema,
   radius: vec2Schema,
   rotationDeg: z.number().default(0),
@@ -80,6 +80,9 @@ const structureSchema = z.object({
     'debrisPile',
     'looseDebris',
     'windsock',
+    'house',
+    'collapsedHouse',
+    'flag',
   ]),
   position: vec2Schema,
   rotationDeg: z.number().default(0),
@@ -109,6 +112,8 @@ export const environmentSchema = z.object({
     mountainOuter: z.number(),
     rockSlopeDeg: z.number(),
     treeline: z.number(),
+    /** Strength of the eroded ridges and gullies carved into raised ground (0 = smooth). */
+    erosion: z.number().min(0).default(1),
     features: z.array(terrainFeatureSchema),
   }),
   river: z.object({
@@ -126,6 +131,8 @@ export const environmentSchema = z.object({
   trails: z.array(pathSchema),
   regions: z.array(regionSchema),
   structures: z.array(structureSchema),
+  /** Flood water: a flat lake surface covering all ground below `level`. */
+  flood: z.object({ level: z.number() }).optional(),
   relay: z.object({ position: vec2Schema, mastHeight: z.number(), range: z.number().positive() }),
   bounds: z.object({ soft: z.number(), hard: z.number(), ceiling: z.number() }),
   vegetation: z.object({
@@ -141,6 +148,12 @@ export const environmentSchema = z.object({
     groundColor: z.string(),
     hemiIntensity: z.number(),
     fogColor: z.string(),
+    /** Strength of image-based lighting from the sky HDRI. */
+    environmentIntensity: z.number().min(0).default(1),
+    /** Brightness of the visible HDRI sky. */
+    skyIntensity: z.number().min(0).default(1),
+    /** Night-time: vehicle and base lights switch on regardless of graphics preset. */
+    night: z.boolean().default(false),
   }),
 });
 

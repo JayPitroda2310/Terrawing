@@ -1,5 +1,7 @@
 import { logger } from '@/utils/helpers/logger';
+import { recommendQuality } from '@/utils/performance/gpuTier';
 import type { SaveRepository } from './SaveRepository';
+import { DEFAULT_KEY_BINDINGS } from '@/game/input/actions';
 import { createDefaultSave, SAVE_VERSION, saveDataSchema, type SaveData } from './saveSchema';
 
 const DEFAULT_KEY = 'terrawing.save.v1';
@@ -15,14 +17,22 @@ export class LocalStorageSaveRepository implements SaveRepository {
 
   async load(): Promise<SaveData> {
     const raw = this.read();
-    if (!raw) return createDefaultSave();
+    if (!raw) {
+      // First run: start on the graphics preset that suits this GPU.
+      const fresh = createDefaultSave();
+      fresh.settings = { ...fresh.settings, graphics: recommendQuality() };
+      return fresh;
+    }
     try {
       const parsed = saveDataSchema.safeParse(JSON.parse(raw));
       if (!parsed.success) {
         logger.warn('save', 'Save data failed validation; using defaults.', parsed.error.issues);
         return createDefaultSave();
       }
-      return { ...parsed.data, version: SAVE_VERSION };
+      const data = parsed.data;
+      // Key bindings from before the drone control layout would conflict with the new actions.
+      if (data.version < 2) data.settings = { ...data.settings, keyBindings: DEFAULT_KEY_BINDINGS };
+      return { ...data, version: SAVE_VERSION };
     } catch (error) {
       logger.warn('save', 'Save data is not valid JSON; using defaults.', error);
       return createDefaultSave();

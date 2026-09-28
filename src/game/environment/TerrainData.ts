@@ -37,6 +37,12 @@ export interface TerrainData {
   readonly slopes: Float32Array;
   readonly river: GeneratedRiver;
   readonly paths: readonly GeneratedPath[];
+  /** Flood-water surface height covering all lower ground, or null when there is no flood. */
+  readonly floodLevel?: number | null;
+  /** Per-vertex 0..1 fire scorch, present only when the environment has burnt regions. */
+  readonly scorch?: Float32Array;
+  /** Height above which trees give way to alpine meadow and rock. */
+  readonly treeline?: number;
   readonly minHeight: number;
   readonly maxHeight: number;
 }

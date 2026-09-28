@@ -55,7 +55,7 @@ export type ZoneDefinition = z.infer<typeof zoneSchema>;
 
 const hazardSchema = z.object({
   id: z.string(),
-  kind: z.enum(['rockfall', 'unstableGround']),
+  kind: z.enum(['rockfall', 'unstableGround', 'fire', 'flood', 'aftershock']),
   label: z.string(),
   position: vec2Schema,
   radius: z.number().positive(),
@@ -76,6 +76,12 @@ const survivorSchema = z.object({
   needsMedical: z.boolean().default(false),
   /** A visible smoke flare makes the survivor easy to spot without the scanner. */
   signalFlare: z.boolean().default(false),
+  /** A flashing torch/strobe — the easiest way to spot someone at night. */
+  strobe: z.boolean().default(false),
+  /** Metres above the ground (e.g. stranded on a roof). */
+  elevation: z.number().min(0).default(0),
+  /** `air`: unreachable by road, rescued by hovering over them (winch). */
+  access: z.enum(['ground', 'air']).default('ground'),
   /** Report shown once the survivor has been secured. */
   report: z.string(),
 });

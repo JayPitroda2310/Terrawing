@@ -59,6 +59,7 @@ const mountainCollapse: EnvironmentInput = {
       { kind: 'plateau', id: 'cabin-clearing', center: [-170, -126], radius: 18, blend: 22 },
       { kind: 'plateau', id: 'east-landing', center: [172, -160], radius: 18, blend: 26 },
       { kind: 'plateau', id: 'shelter-floor', center: [234, -166], radius: 12, blend: 16 },
+      { kind: 'plateau', id: 'forest-hollow', center: [-193, -159], radius: 8, blend: 12 },
     ],
   },
   river: {
@@ -153,6 +154,7 @@ const mountainCollapse: EnvironmentInput = {
     { id: 'west-bank-mud', kind: 'mud', center: [28, 110], radius: [26, 34], density: 1 },
   ],
   structures: [
+    { id: 'base-flag', kind: 'flag', position: [-316, 287] },
     { id: 'base-helipad', kind: 'helipad', position: [-330, 305] },
     { id: 'tent-command', kind: 'tent', position: [-354, 322], rotationDeg: 15, scale: 1.2 },
     { id: 'tent-medical', kind: 'tent', position: [-364, 298], rotationDeg: 5 },
@@ -161,8 +163,8 @@ const mountainCollapse: EnvironmentInput = {
     { id: 'relay-mast', kind: 'antenna', position: [-356, 282], params: { height: 30 } },
     { id: 'flood-1', kind: 'floodlight', position: [-312, 326], rotationDeg: 200 },
     { id: 'flood-2', kind: 'floodlight', position: [-346, 285], rotationDeg: 40 },
-    { id: 'extraction-lz', kind: 'landingZone', position: [-262, 262] },
-    { id: 'lz-windsock', kind: 'windsock', position: [-248, 250] },
+    { id: 'extraction-lz', kind: 'landingZone', position: [-253, 273] },
+    { id: 'lz-windsock', kind: 'windsock', position: [-239, 261] },
     { id: 'wrecked-car', kind: 'carWreck', position: [-38, 141], rotationDeg: 35 },
     { id: 'landslide-debris', kind: 'debrisPile', position: [-64, 146], params: { radius: 17 } },
     { id: 'logs-road', kind: 'fallenLogs', position: [-47, 126], rotationDeg: 60 },
@@ -193,12 +195,14 @@ const mountainCollapse: EnvironmentInput = {
   vegetation: { treeSpacing: 8.5, scatterTreeChance: 0.07, rockDensity: 1 },
   lighting: {
     sunDirection: [-0.45, 0.72, 0.38],
-    sunColor: '#cfd8de',
-    sunIntensity: 1.25,
+    sunColor: '#dfe6ea',
+    sunIntensity: 1.1,
     skyColor: '#a3b1bb',
     groundColor: '#2a2924',
-    hemiIntensity: 0.95,
-    fogColor: '#7e8b93',
+    hemiIntensity: 0.25,
+    fogColor: '#8a959c',
+    environmentIntensity: 0.85,
+    skyIntensity: 0.9,
   },
 };
 

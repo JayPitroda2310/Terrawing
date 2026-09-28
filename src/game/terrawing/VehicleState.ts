@@ -7,6 +7,20 @@ import type { VehicleMode } from '@/game/core/GameState';
  * Heading convention: yaw 0 faces north (-Z); positive yaw turns clockwise when seen from above
  * (towards east / +X).
  */
+/** Per-wheel suspension and tyre state (rover mode). Order: FR, FL, RR, RL. */
+export interface WheelState {
+  contact: boolean;
+  /** Suspension compression in metres (0 = fully extended). */
+  compression: number;
+  /** Accumulated wheel rotation (radians) for rendering. */
+  spin: number;
+  /** 0 = full grip, 1 = sliding/spinning. */
+  slip: number;
+  surface: SurfaceId;
+  /** Puddle coverage 0..1 under the tyre (drives splash spray). */
+  puddle: number;
+}
+
 export interface VehicleState {
   mode: VehicleMode;
   position: { x: number; y: number; z: number };
@@ -35,6 +49,27 @@ export interface VehicleState {
   lift: number;
   rig: RigState;
   payload: string | null;
+  /** Casualties carried in the pod. */
+  passengers: number;
+  /** Casualty capsules on the roof rack: patient jacket and lateral slot (local X). */
+  capsules: { jacket: string; x: number }[];
+  /** The capsules are being handled by the medical team (drawn by the handover scene). */
+  capsulesDetached: boolean;
+  /** 0..1 how wet the bodywork is (follows the weather). */
+  wetness: number;
+  wheels: WheelState[];
+  /** Average tyre slip across grounded wheels (0 = grip, 1 = sliding). */
+  slip: number;
+  /** Average available friction coefficient under the wheels. */
+  traction: number;
+  /** How hard the suspension is working (m/s) — drives camera shake and sound. */
+  suspensionActivity: number;
+  /** Current front-wheel steering angle (radians). */
+  steerAngle: number;
+  /** TerraWing is flipping itself upright after a rollover. */
+  selfRighting: boolean;
+  /** Chassis up-axis Y component: 1 = level, 0 = on its side, < 0 = upside down. */
+  uprightness: number;
   /** Remaining time on the current transform phase etc. is kept by controllers. */
   hovering: boolean;
 }
@@ -69,6 +104,24 @@ export function createVehicleState(
     lift: 0,
     rig: { ...(mode === 'FLIGHT' ? config.rig.flight : config.rig.rover) },
     payload: null,
+    passengers: 0,
+    capsules: [],
+    capsulesDetached: false,
+    wetness: 0,
+    wheels: Array.from({ length: 4 }, () => ({
+      contact: true,
+      compression: 0.12,
+      spin: 0,
+      slip: 0,
+      surface: SurfaceId.PAD as SurfaceId,
+      puddle: 0,
+    })),
+    slip: 0,
+    traction: 1,
+    suspensionActivity: 0,
+    steerAngle: 0,
+    selfRighting: false,
+    uprightness: 1,
     hovering: false,
   };
 }

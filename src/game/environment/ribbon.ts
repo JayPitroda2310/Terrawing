@@ -65,10 +65,28 @@ export function buildRibbon(options: RibbonOptions): BufferGeometry {
     const b = a + 1;
     const c = a + 2;
     const d = a + 3;
-    indices.push(a, c, b, b, c, d);
+    // Counter-clockwise seen from above, so the surface faces up (front faces render, normals +Y).
+    indices.push(a, b, c, b, d, c);
+  }
+
+  // Distance (m) from each sample to the nearest end of the strip or gap in it, so shaders can
+  // break up the surface near its ends instead of stopping on a hard straight edge.
+  const step = line.length / (samples - 1);
+  const endDistance = new Float32Array(samples * 2);
+  let run = Infinity;
+  const forward = new Float32Array(samples);
+  for (let i = 0; i < samples; i++) {
+    run = keep[i] && i > 0 && keep[i - 1] ? run + step : 0;
+    forward[i] = run;
+  }
+  run = 0;
+  for (let i = samples - 1; i >= 0; i--) {
+    run = keep[i] && i < samples - 1 && keep[i + 1] ? run + step : 0;
+    endDistance[i * 2] = endDistance[i * 2 + 1] = Math.min(forward[i]!, run);
   }
 
   const geometry = new BufferGeometry();
+  geometry.setAttribute('endDistance', new BufferAttribute(endDistance, 1));
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
   geometry.setIndex(indices);

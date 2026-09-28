@@ -2,12 +2,12 @@ import { Panel } from '@/components/common/Panel';
 import type { GameSession } from '@/game/core/GameSession';
 import type { Telemetry } from '@/game/core/Telemetry';
 import { formatKeyCode } from '@/game/input/actions';
-import { useGameStore } from '@/store/gameStore';
 import { useMissionStore } from '@/store/missionStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useTelemetryStore } from '@/store/telemetryStore';
 import { formatTime, toGpsString } from '@/utils/helpers/format';
 import { BatteryIndicator } from './BatteryIndicator';
+import { CameraFeed } from './CameraFeed';
 import { Compass } from './Compass';
 import { FlightHUD } from './FlightHUD';
 import { IntegrityIndicator } from './IntegrityIndicator';
@@ -39,7 +39,7 @@ export function HUD({ session }: { session: GameSession }) {
 
       {/* Top-left: mission + objectives */}
       <div className="absolute top-5 left-5 flex flex-col gap-2">
-        <div className="flex w-[300px] items-center gap-3 border border-ops-line bg-ops-panel px-3 py-1.5 font-mono text-[11px] text-ops-dim backdrop-blur-[6px]">
+        <div className="bezel flex w-[300px] items-center gap-3 px-3.5 py-2 font-mono text-[11px] text-ops-dim [--chamfer:8px]">
           <span className="font-semibold tracking-[0.2em] text-ops-orange">
             {session.mission.code}
           </span>
@@ -76,6 +76,22 @@ export function HUD({ session }: { session: GameSession }) {
                   : toGpsString(telemetry.x, telemetry.z, session.environment.geo)}
               </span>
             </div>
+            {telemetry.passengers > 0 && (
+              <div className="flex justify-between">
+                <span>PATIENTS ABOARD</span>
+                <span
+                  className={
+                    telemetry.patientCondition < 35
+                      ? 'animate-pulse-soft text-ops-red'
+                      : telemetry.patientCondition < 70
+                        ? 'text-ops-amber'
+                        : 'text-ops-green'
+                  }
+                >
+                  {telemetry.passengers} · {Math.round(telemetry.patientCondition)}%
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span>SURVIVORS</span>
               <span className="text-ops-text">
@@ -91,14 +107,16 @@ export function HUD({ session }: { session: GameSession }) {
 
       {/* Bottom-left: power + integrity */}
       <div className="absolute bottom-5 left-5 w-[280px]">
-        <Panel dense className="space-y-3">
-          <BatteryIndicator
-            value={telemetry.battery}
-            level={telemetry.batteryLevel}
-            charging={telemetry.charging}
-            rate={telemetry.batteryRate}
-          />
-          <IntegrityIndicator value={telemetry.integrity} level={telemetry.integrityLevel} />
+        <Panel dense className="space-y-2">
+          <div className="flex justify-around">
+            <BatteryIndicator
+              value={telemetry.battery}
+              level={telemetry.batteryLevel}
+              charging={telemetry.charging}
+              rate={telemetry.batteryRate}
+            />
+            <IntegrityIndicator value={telemetry.integrity} level={telemetry.integrityLevel} />
+          </div>
           {telemetry.payload && (
             <div className="border-t border-ops-line pt-2 font-mono text-[10px] tracking-[0.15em] text-ops-blue">
               ■ PAYLOAD · {telemetry.payload}
@@ -108,7 +126,7 @@ export function HUD({ session }: { session: GameSession }) {
       </div>
 
       {/* Bottom-right: mode telemetry + scanner */}
-      <div className="absolute right-5 bottom-5 w-[280px]">
+      <div className="absolute right-5 bottom-5 w-[340px]">
         <Panel dense className="space-y-3">
           {telemetry.mode === 'FLIGHT' ? (
             <FlightHUD telemetry={telemetry} />
@@ -130,7 +148,8 @@ export function HUD({ session }: { session: GameSession }) {
         <ActionArea telemetry={telemetry} />
       </div>
 
-      <Reticle />
+      {session.cameraView === 'chase' && <Reticle />}
+      <CameraFeed session={session} telemetry={telemetry} />
     </div>
   );
 }
@@ -206,9 +225,7 @@ function RadioLine() {
 
 function ActionArea({ telemetry }: { telemetry: Telemetry }) {
   const bindings = useSettingsStore((s) => s.settings.keyBindings);
-  const pointerLocked = useGameStore((s) => s.pointerLocked);
   const interactKey = formatKeyCode(bindings.interact[0] ?? 'KeyE');
-  const scanKey = formatKeyCode(bindings.scan[0] ?? 'KeyQ');
 
   if (telemetry.substate === 'TRANSFORMING') {
     return (
@@ -244,10 +261,10 @@ function ActionArea({ telemetry }: { telemetry: Telemetry }) {
     <div className="flex flex-col items-center gap-2">
       {telemetry.prompt && (
         <div
-          className={`flex items-center gap-3 border px-4 py-2 font-mono text-xs font-semibold tracking-[0.15em] backdrop-blur ${
+          className={`flex items-center gap-3 border bg-ops-panel-strong px-4 py-2 font-mono text-xs font-semibold tracking-[0.15em] ${
             telemetry.prompt.blockedReason
-              ? 'border-ops-amber/60 bg-ops-panel text-ops-amber'
-              : 'border-ops-green/70 bg-ops-green/10 text-ops-green'
+              ? 'border-ops-amber/60 text-ops-amber'
+              : 'border-ops-green/70 text-ops-green'
           }`}
         >
           {telemetry.prompt.blockedReason ? (
@@ -264,18 +281,6 @@ function ActionArea({ telemetry }: { telemetry: Telemetry }) {
           )}
         </div>
       )}
-      <div className="flex gap-4 font-mono text-[10px] tracking-[0.15em] text-ops-dim">
-        <span>
-          <Key>{scanKey}</Key> SCAN
-        </span>
-        {(!telemetry.prompt || telemetry.prompt.blockedReason) && (
-          <span>
-            <Key>{interactKey}</Key>{' '}
-            {telemetry.mode === 'FLIGHT' ? 'LAND & TRANSFORM' : 'TRANSFORM TO FLIGHT'}
-          </span>
-        )}
-        {!pointerLocked && <span>CLICK — MOUSE LOOK</span>}
-      </div>
     </div>
   );
 }
@@ -351,6 +356,8 @@ function CinematicOverlay({ session }: { session: GameSession }) {
   const bindings = useSettingsStore((s) => s.settings.keyBindings);
   const state = session.gameplay.state;
   const intro = state.kind === 'CINEMATIC' && state.shot === 'missionIntro';
+  const handover =
+    state.kind === 'CINEMATIC' && state.shot === 'handover' ? session.handover : null;
   return (
     <div className="pointer-events-none absolute inset-0 z-10" data-testid="cinematic">
       <div className="absolute inset-x-0 top-0 h-[9vh] bg-black/85 animate-fade-in" />
@@ -360,15 +367,21 @@ function CinematicOverlay({ session }: { session: GameSession }) {
           {session.mission.code}
         </div>
         <div className="text-3xl font-bold tracking-[0.12em] text-ops-text">
-          {intro ? session.mission.name.toUpperCase() : 'EXTRACTION CONFIRMED'}
+          {intro
+            ? session.mission.name.toUpperCase()
+            : handover
+              ? 'EN ROUTE TO HOSPITAL'
+              : 'EXTRACTION CONFIRMED'}
         </div>
         <div className="mt-1 font-mono text-xs text-ops-dim">
           {intro
             ? `${session.environment.regionName} · ${session.mission.briefing.weather}`
-            : 'All survivors accounted for'}
+            : handover
+              ? 'Patients in the care of the medical team — en route to Regional Hospital'
+              : 'All survivors accounted for'}
         </div>
       </div>
-      {intro && (
+      {(intro || handover) && (
         <div className="absolute right-12 bottom-[12vh] font-mono text-[11px] tracking-[0.2em] text-ops-dim">
           [{formatKeyCode(bindings.interact[0] ?? 'KeyE')}] SKIP
         </div>

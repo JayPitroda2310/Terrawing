@@ -57,6 +57,172 @@ function envelope(t: number, attack: number, decay: number): number {
   return Math.exp(-(t - attack) / decay);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Mechanical building blocks for the transformation (physically modelled, not random noise).
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * End of travel: the actuator reaches its stop and the load settles. A soft, damped low thump
+ * (the chassis taking the load) and a brief muffled knock — no ringing metal.
+ */
+function addClunk(out: Float32Array, at: number, weight: number, seed: number): void {
+  const noise = noiseSource(seed);
+  const knock = lowpass(450);
+  const start = Math.floor(at * SAMPLE_RATE);
+  for (let i = start; i < out.length; i++) {
+    const t = (i - start) / SAMPLE_RATE;
+    if (t > 0.3) break;
+    const thump = Math.sin(TAU * (72 - 20 * t) * t) * Math.exp(-t / 0.05);
+    const body = knock(noise()) * Math.exp(-t / 0.018) * 1.6;
+    out[i]! += (thump + body) * weight;
+  }
+}
+
+/** Two-pole resonant band-pass (state-variable filter): gives noise a "body" at a frequency. */
+function bandpass(centerHz: number, q: number): (x: number) => number {
+  const f = 2 * Math.sin((Math.PI * centerHz) / SAMPLE_RATE);
+  const damp = 1 / q;
+  let low = 0;
+  let band = 0;
+  return (x) => {
+    low += f * band;
+    const high = x - low - damp * band;
+    band += f * high;
+    return band;
+  };
+}
+
+/**
+ * Actuator run from `start` for `length` s — a brushless servo motor driving a gearbox:
+ *  - motor whine: the electrical commutation tone (a few hundred Hz → ~1.5 kHz with speed), with
+ *    its natural wobble (speed ripple under load) and rough harmonics, blended with noise so it is
+ *    never a clean musical note;
+ *  - gearbox: band-passed noise that rises with speed (meshing teeth heard as a gritty "zzz");
+ *  - structure-borne hum through the chassis at the motor's rotation rate.
+ * Speed ramps up, sags under load mid-travel and ramps down.
+ */
+function addServo(
+  out: Float32Array,
+  start: number,
+  length: number,
+  baseHz: number,
+  seed: number,
+  gain = 1,
+): void {
+  const noise = noiseSource(seed);
+  const gear = bandpass(1900, 3);
+  const gearHi = bandpass(3400, 4);
+  const hum = bandpass(140, 2);
+  const random = createRandom(seed + 9);
+  let phase = 0;
+  let wobble = 0;
+  const a = Math.floor(start * SAMPLE_RATE);
+  const n = Math.floor(length * SAMPLE_RATE);
+  const ramp = Math.min(0.16, length * 0.3);
+  for (let k = 0; k < n && a + k < out.length; k++) {
+    const t = k / SAMPLE_RATE;
+    const speed = Math.max(0, Math.min(1, t / ramp, (length - t) / ramp));
+    const strain = 1 - 0.14 * Math.sin((Math.PI * t) / length);
+    if (k % 180 === 0) wobble = wobble * 0.7 + (random() - 0.5) * 0.3;
+    const f = (baseHz * 0.9 + 900 * speed) * strain * (1 + wobble * 0.04);
+    phase += (TAU * f) / SAMPLE_RATE;
+    const whine =
+      (Math.sin(phase) * 0.55 + Math.sin(phase * 2.01) * 0.25 + Math.sin(phase * 3.03) * 0.1) *
+      (0.75 + 0.25 * Math.sin(phase * 0.125));
+    const n0 = noise();
+    const grit = gear(n0) * 0.9 + gearHi(n0) * 0.5;
+    const body = hum(n0) * 1.6;
+    out[a + k]! += (whine * 0.16 + grit * 0.35 + body * 0.5) * speed * gain;
+  }
+}
+
+/**
+ * Hydraulics from `start` for `length` s: the gear pump's pressure whine (a slightly unstable
+ * tone around 300–420 Hz with ripple at the pump's piston rate), fluid rushing through the lines
+ * and valve (bright hiss), and a pressure-release "psst" when the stroke ends. Lowering vents
+ * pressure (falling pitch), raising builds it (rising pitch).
+ */
+function addHydraulic(
+  out: Float32Array,
+  start: number,
+  length: number,
+  seed: number,
+  lowering: boolean,
+): void {
+  const noise = noiseSource(seed);
+  const hiss = bandpass(4200, 1.2);
+  const flow = bandpass(900, 0.9);
+  let phase = 0;
+  const a = Math.floor(start * SAMPLE_RATE);
+  const n = Math.floor(length * SAMPLE_RATE);
+  for (let k = 0; k < n && a + k < out.length; k++) {
+    const t = k / n;
+    const env = Math.min(1, t * 10) * Math.min(1, (1 - t) * 5);
+    const pressure = lowering ? 1 - t * 0.35 : 0.65 + t * 0.35;
+    phase += (TAU * (300 + 120 * pressure)) / SAMPLE_RATE;
+    const ripple = 0.7 + 0.3 * Math.sin(phase * 0.1);
+    const pump = (Math.sin(phase) * 0.5 + Math.sin(phase * 2) * 0.2) * ripple;
+    const n0 = noise();
+    out[a + k]! += (pump * 0.1 + flow(n0) * 0.45 + hiss(n0) * 0.3 * pressure) * env;
+  }
+  // Pressure release at the end of the stroke.
+  const vent = bandpass(5200, 1.5);
+  const v0 = a + n;
+  for (let k = 0; k < 0.22 * SAMPLE_RATE && v0 + k < out.length; k++) {
+    const t = k / SAMPLE_RATE;
+    out[v0 + k]! += vent(noise()) * Math.exp(-t / 0.06) * 0.5;
+  }
+}
+
+/**
+ * Places the dry mechanism in a space so it doesn't sound "boxed": early reflections off the
+ * ground and hull plus a short diffuse tail, then a gentle high-shelf lift for presence.
+ */
+function addSpace(out: Float32Array): Float32Array {
+  const taps = [
+    [0.011, 0.32],
+    [0.019, 0.24],
+    [0.029, 0.18],
+    [0.043, 0.13],
+    [0.061, 0.09],
+    [0.089, 0.06],
+  ] as const;
+  const dry = Float32Array.from(out);
+  for (const [delay, gain] of taps) {
+    const d = Math.floor(delay * SAMPLE_RATE);
+    for (let i = d; i < out.length; i++) out[i]! += dry[i - d]! * gain;
+  }
+  const lp = lowpass(2500);
+  for (let i = 0; i < out.length; i++) {
+    const x = out[i]!;
+    out[i] = x + (x - lp(x)) * 0.35;
+  }
+  return out;
+}
+
+/**
+ * Rotor speed ramp: blade-pass tone (3-blade rotor) with harmonics, broadband blade noise chopped
+ * by each passing blade and scaling with tip speed, and the motors' electrical whine.
+ * `rpmAt(fraction)` gives rotor speed 0..1 over the buffer.
+ */
+function addRotorRamp(out: Float32Array, rpmAt: (t: number) => number, seed: number): void {
+  const noise = noiseSource(seed);
+  const air = lowpass(1400);
+  const airHp = highpass(120);
+  let blade = 0;
+  let motor = 0;
+  for (let i = 0; i < out.length; i++) {
+    const rpm = rpmAt(i / out.length);
+    blade += (TAU * 115 * rpm) / SAMPLE_RATE;
+    motor += (TAU * (420 + 2600 * rpm)) / SAMPLE_RATE;
+    const pass = Math.sin(blade) * 0.55 + Math.sin(blade * 2) * 0.25 + Math.sin(blade * 3) * 0.12;
+    const chop = 0.6 + 0.4 * Math.max(0, Math.sin(blade));
+    const wash = air(airHp(noise())) * chop * rpm * rpm * 0.9;
+    const whine = Math.sin(motor) * 0.07 * rpm;
+    out[i]! += (pass * rpm * 0.6 + wash + whine) * Math.min(1, rpm * 3);
+  }
+}
+
 const generators = {
   rotorLoop(): Float32Array {
     const out = buffer(1.1);
@@ -160,6 +326,30 @@ const generators = {
     }
     return normalize(makeSeamless(out, 0.1), 0.6);
   },
+  sirenLoop(): Float32Array {
+    // Two-tone emergency horn (hi-lo, 0.55 s per note): a driven horn — odd harmonics through a
+    // throaty resonance — with a little road/engine rumble underneath.
+    const note = 0.55;
+    const out = buffer(note * 4);
+    const noise = noiseSource(31);
+    const rumble = lowpass(120);
+    const horn = bandpass(1400, 1.2);
+    let phase = 0;
+    for (let i = 0; i < out.length; i++) {
+      const t = i / SAMPLE_RATE;
+      const k = Math.floor(t / note) % 2;
+      const local = (t % note) / note;
+      // Notes glide into each other over a few ms, like a real compressor horn.
+      const f = (k === 0 ? 925 : 740) * (1 + 0.004 * Math.sin(TAU * 5.5 * t));
+      phase += (TAU * f) / SAMPLE_RATE;
+      let v = 0;
+      for (let h = 1; h <= 9; h += 2) v += Math.sin(phase * h) / h;
+      const edge = Math.min(1, local * 40, (1 - local) * 40);
+      const tone = Math.tanh(v * 1.8) * (0.85 + 0.15 * edge);
+      out[i] = tone * 0.6 + horn(tone) * 0.35 + rumble(noise()) * 0.25;
+    }
+    return normalize(makeSeamless(out, 0.02), 0.8);
+  },
   radioStaticLoop(): Float32Array {
     const out = buffer(1.6);
     const noise = noiseSource(8);
@@ -185,45 +375,87 @@ const generators = {
     }
     return normalize(out, 0.95);
   },
-  transform(): Float32Array {
-    const out = buffer(1.3);
-    const noise = noiseSource(10);
-    const lp = lowpass(2000);
-    let phase = 0;
-    for (let i = 0; i < out.length; i++) {
-      const t = i / SAMPLE_RATE;
-      const freq = 300 + 500 * Math.sin(Math.min(1, t / 1.1) * Math.PI * 0.5);
-      phase += (TAU * freq) / SAMPLE_RATE;
-      const whine = (Math.sin(phase) + 0.3 * Math.sin(phase * 2)) * 0.3 * envelope(t, 0.05, 0.9);
-      const clunkTimes = [0.05, 0.55, 1.05];
-      let clunk = 0;
-      for (const ct of clunkTimes)
-        if (t >= ct) clunk += lp(noise()) * Math.exp(-(t - ct) / 0.04) * 0.9;
-      out[i] = whine + clunk;
-    }
-    return normalize(out, 0.85);
+  /** Arms swing back and telescope in: two servo runs, then the arm locks hit home. */
+  armFold(): Float32Array {
+    const out = buffer(1.05);
+    addServo(out, 0.0, 0.62, 610, 11);
+    addServo(out, 0.36, 0.42, 820, 12, 0.7);
+    addHydraulic(out, 0.0, 0.8, 15, true);
+    addClunk(out, 0.8, 0.8, 13);
+    addClunk(out, 0.86, 0.55, 14);
+    return normalize(addSpace(out), 0.85);
   },
-  rotorSpinUp(): Float32Array {
-    const out = buffer(0.9);
-    let phase = 0;
-    for (let i = 0; i < out.length; i++) {
-      const t = i / SAMPLE_RATE;
-      const k = t / 0.9;
-      phase += (TAU * (40 + 90 * k)) / SAMPLE_RATE;
-      out[i] = Math.sin(phase) * (0.5 + 0.5 * Math.sin(phase * 0.33)) * k;
+  /** Arms unlock with a click, telescope out and swing into flight position, then latch. */
+  armUnfold(): Float32Array {
+    const out = buffer(1.05);
+    addClunk(out, 0.0, 0.45, 21);
+    addServo(out, 0.05, 0.4, 820, 22, 0.7);
+    addServo(out, 0.2, 0.6, 640, 23);
+    addHydraulic(out, 0.05, 0.78, 25, false);
+    addClunk(out, 0.82, 0.75, 24);
+    return normalize(addSpace(out), 0.85);
+  },
+  /**
+   * Wheels swing down on their arms and lock (≈1.3 s), the tyres take the weight, then the landing
+   * legs telescope in and fold away (≈0.9 s).
+   */
+  wheelsDeploy(): Float32Array {
+    const out = buffer(2.45);
+    addServo(out, 0.0, 1.3, 380, 31);
+    addHydraulic(out, 0.0, 1.3, 35, true);
+    addClunk(out, 1.3, 1, 32);
+    const thud = lowpass(140);
+    const noise = noiseSource(34);
+    for (let i = Math.floor(1.36 * SAMPLE_RATE); i < Math.floor(1.8 * SAMPLE_RATE); i++) {
+      const t = i / SAMPLE_RATE - 1.36;
+      out[i]! += thud(noise()) * Math.exp(-t / 0.08) * 1.6;
     }
-    return normalize(out, 0.7);
+    addServo(out, 1.3, 0.85, 520, 36, 0.6);
+    addHydraulic(out, 1.3, 0.85, 37, false);
+    addClunk(out, 2.18, 0.55, 38);
+    return normalize(addSpace(out), 0.9);
+  },
+  /** Landing legs unfold and extend to the ground (≈0.9 s), then the wheels lift into their wells. */
+  wheelsRetract(): Float32Array {
+    const out = buffer(2.4);
+    addServo(out, 0.0, 0.9, 520, 41, 0.6);
+    addHydraulic(out, 0.0, 0.9, 44, true);
+    addClunk(out, 0.92, 0.6, 45);
+    addServo(out, 0.95, 1.2, 400, 42);
+    addHydraulic(out, 0.95, 1.2, 46, false);
+    addClunk(out, 2.18, 0.7, 43);
+    return normalize(addSpace(out), 0.85);
+  },
+  chassisLower(): Float32Array {
+    const out = buffer(0.6);
+    addHydraulic(out, 0, 0.5, 51, true);
+    addClunk(out, 0.48, 0.35, 52);
+    return normalize(addSpace(out), 0.6);
+  },
+  chassisRaise(): Float32Array {
+    const out = buffer(0.6);
+    addHydraulic(out, 0, 0.5, 61, false);
+    addClunk(out, 0.47, 0.3, 62);
+    return normalize(addSpace(out), 0.6);
+  },
+  /** Generic actuation, kept for phase data that still asks for it. */
+  transform(): Float32Array {
+    const out = buffer(1.05);
+    addServo(out, 0.0, 0.7, 600, 71);
+    addClunk(out, 0.78, 0.8, 72);
+    return normalize(addSpace(out), 0.85);
+  },
+  /** Rotors accelerate against air resistance (torque-limited start, then drag). */
+  rotorSpinUp(): Float32Array {
+    const out = buffer(1.2);
+    addRotorRamp(out, (t) => (t < 0.05 ? 0 : 1 - Math.exp(-(t - 0.05) * 4.2)), 81);
+    return normalize(out, 0.8);
   },
   rotorSpinDown(): Float32Array {
-    const out = buffer(0.9);
-    let phase = 0;
-    for (let i = 0; i < out.length; i++) {
-      const t = i / SAMPLE_RATE;
-      const k = 1 - t / 0.9;
-      phase += (TAU * (40 + 90 * k)) / SAMPLE_RATE;
-      out[i] = Math.sin(phase) * (0.5 + 0.5 * Math.sin(phase * 0.33)) * k;
-    }
-    return normalize(out, 0.7);
+    const out = buffer(1.1);
+    addRotorRamp(out, (t) => Math.max(0, 1 / (1 + t * 7) - 0.12), 91);
+    addClunk(out, 0.95, 0.25, 92);
+    return normalize(out, 0.8);
   },
   scanPing(): Float32Array {
     const out = buffer(1.8);
@@ -246,17 +478,50 @@ const generators = {
     }
     return normalize(out, 0.6);
   },
-  warning(): Float32Array {
-    const out = buffer(0.6);
+  /** One pulse of the machine alarm buzzer: the unit the continuous danger alarm repeats. */
+  alarmBeep(): Float32Array {
+    const out = buffer(0.16);
+    const hp = highpass(280);
+    const lp = lowpass(2600);
+    let a = 0;
+    let b = 0;
     for (let i = 0; i < out.length; i++) {
       const t = i / SAMPLE_RATE;
-      const freq = t < 0.3 ? 880 : 660;
-      const gate = t % 0.3 < 0.22 ? 1 : 0;
-      out[i] =
-        (Math.sin(TAU * freq * t) > 0 ? 0.6 : -0.6) * gate * 0.5 +
-        Math.sin(TAU * freq * t) * gate * 0.4;
+      const gate = Math.min(1, t / 0.004, (0.13 - t) / 0.01);
+      a = (a + 415 / SAMPLE_RATE) % 1;
+      b = (b + 431 / SAMPLE_RATE) % 1;
+      const driven = Math.tanh(((a * 2 - 1) * 0.6 + (b * 2 - 1) * 0.6) * 3.5);
+      out[i] = lp(hp(driven)) * Math.max(0, gate);
     }
-    return normalize(out, 0.55);
+    return normalize(out, 0.6);
+  },
+  /**
+   * Machine caution alarm: three short pulses from an overdriven electronic buzzer (two detuned
+   * sawtooth oscillators beating against each other through a small speaker's band), the harsh
+   * blare of equipment alarms rather than a beeping clock.
+   */
+  warning(): Float32Array {
+    const out = buffer(0.78);
+    const hp = highpass(280);
+    const lp = lowpass(2600);
+    const pulses = [0, 0.22, 0.44];
+    let a = 0;
+    let b = 0;
+    for (let i = 0; i < out.length; i++) {
+      const t = i / SAMPLE_RATE;
+      let gate = 0;
+      for (const p0 of pulses) {
+        const u = t - p0;
+        if (u >= 0 && u < 0.16) gate = Math.min(1, u / 0.004, (0.16 - u) / 0.01);
+      }
+      a = (a + 415 / SAMPLE_RATE) % 1;
+      b = (b + 431 / SAMPLE_RATE) % 1;
+      const saw = (a * 2 - 1) * 0.6 + (b * 2 - 1) * 0.6;
+      // Speaker overdrive, then the speaker's narrow band.
+      const driven = Math.tanh(saw * 3.5);
+      out[i] = lp(hp(driven)) * gate;
+    }
+    return normalize(out, 0.6);
   },
   impact(): Float32Array {
     const out = buffer(0.6);

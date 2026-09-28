@@ -7,7 +7,9 @@ import {
   ACTION_LABELS,
   DEFAULT_KEY_BINDINGS,
   formatKeyCode,
-  REBINDABLE_ACTIONS,
+  ACTION_GROUPS,
+  FLIGHT_PRESETS,
+  type FlightControlPreset,
   type GameAction,
 } from '@/game/input/actions';
 import type { GraphicsQuality } from '@/services/save/saveSchema';
@@ -224,6 +226,13 @@ function AudioTab() {
           onChange={(v) => update('showSubtitles', v)}
         />
       </Row>
+      <Row label="Voice narration" hint="Narrated mission story and spoken radio calls from base.">
+        <Toggle
+          label="Voice narration"
+          value={settings.voiceNarration}
+          onChange={(v) => update('voiceNarration', v)}
+        />
+      </Row>
     </div>
   );
 }
@@ -232,6 +241,12 @@ function ControlsTab() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const rebind = useSettingsStore((s) => s.rebind);
+  const applyFlightPreset = useSettingsStore((s) => s.applyFlightPreset);
+  const activePreset = (Object.keys(FLIGHT_PRESETS) as FlightControlPreset[]).find((preset) =>
+    Object.entries(FLIGHT_PRESETS[preset]).every(
+      ([action, codes]) => settings.keyBindings[action as GameAction].join() === codes.join(),
+    ),
+  );
   const [listening, setListening] = useState<GameAction | null>(null);
 
   useEffect(() => {
@@ -266,26 +281,62 @@ function ControlsTab() {
           onChange={(v) => update('invertY', v)}
         />
       </Row>
-      <div className="mt-5 mb-2 text-[10px] font-semibold tracking-[0.25em] text-ops-dim uppercase">
-        Key bindings
-      </div>
-      {REBINDABLE_ACTIONS.map((action) => (
-        <Row key={action} label={ACTION_LABELS[action]}>
-          <button
-            type="button"
-            onClick={() => setListening(action)}
-            aria-label={`Rebind ${ACTION_LABELS[action]}`}
-            className={`min-w-36 border px-3 py-1.5 font-mono text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ops-cyan ${
-              listening === action
-                ? 'animate-pulse-soft border-ops-orange text-ops-orange'
-                : 'border-ops-line-strong text-ops-text hover:border-ops-orange/60'
-            }`}
-          >
-            {listening === action
-              ? 'PRESS A KEY…'
-              : settings.keyBindings[action].map(formatKeyCode).join(' / ')}
-          </button>
-        </Row>
+      <Row
+        label="Drone control layout"
+        hint={
+          activePreset === 'arcade'
+            ? 'Arcade: W/S fly forward/back, Space/Shift climb/descend, arrows slide.'
+            : 'Drone (Mode 2): W/S altitude, A/D rotate, arrows or numpad fly and slide.'
+        }
+      >
+        <div role="radiogroup" aria-label="Drone control layout" className="flex gap-1">
+          {(
+            [
+              ['drone', 'Drone'],
+              ['arcade', 'Arcade'],
+            ] as const
+          ).map(([preset, label]) => (
+            <button
+              key={preset}
+              type="button"
+              role="radio"
+              aria-checked={activePreset === preset}
+              onClick={() => applyFlightPreset(preset)}
+              className={`w-24 border px-3 py-1.5 text-[11px] font-semibold tracking-[0.15em] uppercase outline-none focus-visible:ring-2 focus-visible:ring-ops-cyan ${
+                activePreset === preset
+                  ? 'border-ops-orange bg-ops-orange/15 text-ops-text'
+                  : 'border-ops-line-strong text-ops-dim'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </Row>
+      {ACTION_GROUPS.map((group) => (
+        <div key={group.id}>
+          <div className="mt-5 mb-1 text-[10px] font-semibold tracking-[0.25em] text-ops-dim uppercase">
+            {group.label}
+          </div>
+          {group.actions.map((action) => (
+            <Row key={action} label={ACTION_LABELS[action]}>
+              <button
+                type="button"
+                onClick={() => setListening(action)}
+                aria-label={`Rebind ${ACTION_LABELS[action]}`}
+                className={`min-w-36 border px-3 py-1.5 font-mono text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ops-cyan ${
+                  listening === action
+                    ? 'animate-pulse-soft border-ops-orange text-ops-orange'
+                    : 'border-ops-line-strong text-ops-text hover:border-ops-orange/60'
+                }`}
+              >
+                {listening === action
+                  ? 'PRESS A KEY…'
+                  : settings.keyBindings[action].map(formatKeyCode).join(' / ')}
+              </button>
+            </Row>
+          ))}
+        </div>
       ))}
       <div className="mt-4 flex justify-end">
         <Button variant="ghost" onClick={() => update('keyBindings', DEFAULT_KEY_BINDINGS)}>

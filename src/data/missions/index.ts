@@ -1,5 +1,9 @@
 import { validateMission, type MissionValidationResult } from '@/game/missions/MissionDefinition';
 import { MISSION_01 } from './mission01';
+import { MISSION_02 } from './mission02';
+import { MISSION_03 } from './mission03';
+import { MISSION_04 } from './mission04';
+import { MISSION_05 } from './mission05';
 
 /** Summary shown in mission select, including missions that are not yet playable. */
 export interface MissionCatalogEntry {
@@ -12,6 +16,10 @@ export interface MissionCatalogEntry {
 
 const RAW_MISSIONS: Readonly<Record<string, unknown>> = {
   [MISSION_01.id]: MISSION_01,
+  [MISSION_02.id]: MISSION_02,
+  [MISSION_03.id]: MISSION_03,
+  [MISSION_04.id]: MISSION_04,
+  [MISSION_05.id]: MISSION_05,
 };
 
 export const MISSION_CATALOG: readonly MissionCatalogEntry[] = [
@@ -26,29 +34,29 @@ export const MISSION_CATALOG: readonly MissionCatalogEntry[] = [
     id: 'mission-02',
     code: 'MISSION 02',
     name: 'Flood Response',
-    available: false,
-    teaser: 'Classified',
+    available: true,
+    teaser: 'River flood · 3 stranded · Heavy rain',
   },
   {
     id: 'mission-03',
     code: 'MISSION 03',
     name: 'Forest Fire',
-    available: false,
-    teaser: 'Classified',
+    available: true,
+    teaser: 'Wildfire · 3 cut off · Smoke haze',
   },
   {
     id: 'mission-04',
     code: 'MISSION 04',
     name: 'Earthquake',
-    available: false,
-    teaser: 'Classified',
+    available: true,
+    teaser: 'Collapsed houses · 3 trapped · Aftershocks',
   },
   {
     id: 'mission-05',
     code: 'MISSION 05',
     name: 'Night Rescue',
-    available: false,
-    teaser: 'Classified',
+    available: true,
+    teaser: 'Mountains after dark · 3 missing · −6 °C',
   },
 ];
 

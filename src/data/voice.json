@@ -1,0 +1,196 @@
+{
+  "briefings": {
+    "mission-01": {
+      "src": "/assets/voice/mission-01-briefing.mp3",
+      "duration": 25.89,
+      "captions": [
+        {
+          "text": "TerraWing, TerraWing, this is Base \u2014 do you copy?",
+          "start": 0.32
+        },
+        {
+          "text": "We've got a major landslide in the Western Mountain Region. It just came down \u2014 the whole valley road is gone.",
+          "start": 3.42
+        },
+        {
+          "text": "Three hikers were up on the trails. We think they're trapped in the slide zone... and at least one of them is hurt.",
+          "start": 8.48
+        },
+        {
+          "text": "Ground teams can't get through. The rain's getting heavier, the slope could go again any minute.",
+          "start": 14.37
+        },
+        {
+          "text": "Find them. All three. Get the med kit to the injured one, and get everybody out of there.",
+          "start": 18.4
+        },
+        {
+          "text": "We're out of time, TerraWing. Go. Go now!",
+          "start": 23.19
+        }
+      ]
+    },
+    "mission-02": {
+      "src": "/assets/voice/mission-02-briefing.mp3",
+      "duration": 24.29,
+      "captions": [
+        {
+          "text": "TerraWing, Base \u2014 urgent traffic, urgent traffic!",
+          "start": 0.32
+        },
+        {
+          "text": "The river's burst its banks. The whole village is under water, and it's still rising.",
+          "start": 3.31
+        },
+        {
+          "text": "We've got two people stuck on their rooftops... and a farmer cut off up on the north hill.",
+          "start": 7.32
+        },
+        {
+          "text": "No roads, no boats, nothing can reach them \u2014 it's all on you.",
+          "start": 11.64
+        },
+        {
+          "text": "One of them is bleeding badly. Get low, hold that hover steady, and get the harness down to them.",
+          "start": 15.23
+        },
+        {
+          "text": "And stay out of the main channel, the current will take you straight down. Move, TerraWing!",
+          "start": 20.12
+        }
+      ]
+    },
+    "mission-03": {
+      "src": "/assets/voice/mission-03-briefing.mp3",
+      "duration": 25.34,
+      "captions": [
+        {
+          "text": "TerraWing, Base \u2014 we have a wildfire. Repeat, wildfire, eastern pine forest!",
+          "start": 0.32
+        },
+        {
+          "text": "The wind just turned. The fire front is moving fast, faster than anyone can run.",
+          "start": 4.93
+        },
+        {
+          "text": "Three people are cut off \u2014 the fire lookout on the knoll, a family at the campsite... and one of our firefighters. His truck just went up.",
+          "start": 9.1
+        },
+        {
+          "text": "Smoke's too thick to see anything. Trust your scanner, and keep out of those flames.",
+          "start": 16.41
+        },
+        {
+          "text": "One of the campers has bad burns. Get the med kit to them. Hurry, TerraWing \u2014 go!",
+          "start": 20.49
+        }
+      ]
+    },
+    "mission-04": {
+      "src": "/assets/voice/mission-04-briefing.mp3",
+      "duration": 21.42,
+      "captions": [
+        {
+          "text": "TerraWing, Base \u2014 the quake just hit. Six point four. The town centre's collapsed.",
+          "start": 0.32
+        },
+        {
+          "text": "Four buildings are down. We've got three people still inside the rubble.",
+          "start": 5.1
+        },
+        {
+          "text": "Aftershocks are rolling through every few minutes... and every one brings more of it down.",
+          "start": 8.84
+        },
+        {
+          "text": "One survivor is critical \u2014 crush injuries. The med kit goes to them first.",
+          "start": 13.22
+        },
+        {
+          "text": "Get in close, get them out, and do not stay near those ruins. Move!",
+          "start": 17.77
+        }
+      ]
+    },
+    "mission-05": {
+      "src": "/assets/voice/mission-05-briefing.mp3",
+      "duration": 23.69,
+      "captions": [
+        {
+          "text": "TerraWing, Base... we've got three people missing up in the mountains, and it's already six below.",
+          "start": 0.32
+        },
+        {
+          "text": "A hiker lost on the ridge. A climber who fell under the north cliff. A driver who slid off the road on the ice.",
+          "start": 5.8
+        },
+        {
+          "text": "Listen to me \u2014 they will not survive the night out there.",
+          "start": 11.44
+        },
+        {
+          "text": "It's pitch black. Look for their torches, and let the scanner find their heat.",
+          "start": 14.88
+        },
+        {
+          "text": "The climber's critical, and your battery's already low. Every second counts, TerraWing. Go!",
+          "start": 18.56
+        }
+      ]
+    }
+  },
+  "radio": {
+    "mission-01": {
+      "intro": "/assets/voice/mission-01-radio-intro.mp3",
+      "deployed": "/assets/voice/mission-01-radio-deployed.mp3",
+      "scanned": "/assets/voice/mission-01-radio-scanned.mp3",
+      "b-found": "/assets/voice/mission-01-radio-b-found.mp3",
+      "rockfall": "/assets/voice/mission-01-radio-rockfall.mp3",
+      "all-found": "/assets/voice/mission-01-radio-all-found.mp3",
+      "battery-warning": "/assets/voice/mission-01-radio-battery-warning.mp3",
+      "signal-lost": "/assets/voice/mission-01-radio-signal-lost.mp3"
+    },
+    "mission-02": {
+      "intro": "/assets/voice/mission-02-radio-intro.mp3",
+      "deployed": "/assets/voice/mission-02-radio-deployed.mp3",
+      "scanned": "/assets/voice/mission-02-radio-scanned.mp3",
+      "b-found": "/assets/voice/mission-02-radio-b-found.mp3",
+      "current": "/assets/voice/mission-02-radio-current.mp3",
+      "all-found": "/assets/voice/mission-02-radio-all-found.mp3",
+      "battery-warning": "/assets/voice/mission-02-radio-battery-warning.mp3",
+      "signal-lost": "/assets/voice/mission-02-radio-signal-lost.mp3"
+    },
+    "mission-03": {
+      "intro": "/assets/voice/mission-03-radio-intro.mp3",
+      "deployed": "/assets/voice/mission-03-radio-deployed.mp3",
+      "scanned": "/assets/voice/mission-03-radio-scanned.mp3",
+      "b-found": "/assets/voice/mission-03-radio-b-found.mp3",
+      "fire-east": "/assets/voice/mission-03-radio-fire-east.mp3",
+      "fire-south": "/assets/voice/mission-03-radio-fire-south.mp3",
+      "fire-north": "/assets/voice/mission-03-radio-fire-north.mp3",
+      "all-found": "/assets/voice/mission-03-radio-all-found.mp3",
+      "battery-warning": "/assets/voice/mission-03-radio-battery-warning.mp3",
+      "signal-lost": "/assets/voice/mission-03-radio-signal-lost.mp3"
+    },
+    "mission-04": {
+      "intro": "/assets/voice/mission-04-radio-intro.mp3",
+      "deployed": "/assets/voice/mission-04-radio-deployed.mp3",
+      "scanned": "/assets/voice/mission-04-radio-scanned.mp3",
+      "aftershock": "/assets/voice/mission-04-radio-aftershock.mp3",
+      "aftershock-b": "/assets/voice/mission-04-radio-aftershock-b.mp3",
+      "all-found": "/assets/voice/mission-04-radio-all-found.mp3",
+      "battery-warning": "/assets/voice/mission-04-radio-battery-warning.mp3",
+      "signal-lost": "/assets/voice/mission-04-radio-signal-lost.mp3"
+    },
+    "mission-05": {
+      "intro": "/assets/voice/mission-05-radio-intro.mp3",
+      "deployed": "/assets/voice/mission-05-radio-deployed.mp3",
+      "scanned": "/assets/voice/mission-05-radio-scanned.mp3",
+      "b-found": "/assets/voice/mission-05-radio-b-found.mp3",
+      "rockfall": "/assets/voice/mission-05-radio-rockfall.mp3",
+      "all-found": "/assets/voice/mission-05-radio-all-found.mp3",
+      "battery-warning": "/assets/voice/mission-05-radio-battery-warning.mp3",
+      "signal-lost": "/assets/voice/mission-05-radio-signal-lost.mp3"
+    }
+  }
+}

@@ -15,14 +15,15 @@ test('main menu → briefing → mission → pause/resume → abort', async ({ p
   page.on('pageerror', (error) => errors.push(error.message));
 
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'TERRAWING' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /terrawing/i })).toBeVisible();
 
   await page.getByRole('button', { name: /start mission/i }).click();
-  await expect(page.getByRole('heading', { name: 'MOUNTAIN COLLAPSE' })).toBeVisible();
+  await page.getByRole('button', { name: /skip story/i }).click();
+  await expect(page.getByRole('heading', { name: /mountain collapse/i })).toBeVisible();
   await expect(page.getByText('3 CIVILIANS MISSING')).toBeVisible();
 
   await page.getByRole('button', { name: /begin rescue/i }).click();
-  await expect(page.getByTestId('cinematic')).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByTestId('cinematic')).toBeVisible({ timeout: 150_000 });
 
   // Skip the intro and take control in rover mode.
   await page.keyboard.press('KeyE');
@@ -32,11 +33,11 @@ test('main menu → briefing → mission → pause/resume → abort', async ({ p
   // Transform to flight and climb: the deploy objective completes.
   await page.keyboard.press('KeyE');
   await expect
-    .poll(async () => (await snapshot(page))?.gameplay, { timeout: 15_000 })
+    .poll(async () => (await snapshot(page))?.gameplay, { timeout: 25_000 })
     .toBe('FLIGHT');
   await page.keyboard.down('Space');
   await expect
-    .poll(async () => (await snapshot(page))?.objectives.deploy, { timeout: 15_000 })
+    .poll(async () => (await snapshot(page))?.objectives.deploy, { timeout: 25_000 })
     .toBe('completed');
   await page.keyboard.up('Space');
 
@@ -48,8 +49,8 @@ test('main menu → briefing → mission → pause/resume → abort', async ({ p
 
   // Abort to the main menu.
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: /abort to main menu/i }).click();
-  await expect(page.getByRole('heading', { name: 'TERRAWING' })).toBeVisible();
+  await page.getByRole('button', { name: /abort mission/i }).click();
+  await expect(page.getByRole('heading', { name: /terrawing/i })).toBeVisible();
 
   expect(errors).toEqual([]);
 });

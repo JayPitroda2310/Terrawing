@@ -1,22 +1,29 @@
 import { useFrame, useThree } from '@react-three/fiber';
 import { useRapier } from '@react-three/rapier';
 import { useEffect, useMemo, useRef } from 'react';
-import { PerspectiveCamera, Vector3, type Group } from 'three';
-import { getSurface } from '@/data/surfaces/surfaces';
+import { Euler, PerspectiveCamera, Quaternion, Vector3, type Group } from 'three';
 import type { GameSession } from '@/game/core/GameSession';
 import type { InputManager } from '@/game/input/InputManager';
 import { useSettingsStore } from '@/store/settingsStore';
 import { clamp, lerp } from '@/utils/math/scalar';
 import { evaluateShot, type ShotContext } from './CinematicCamera';
+import { handoverCamera } from './handoverCamera';
 import { createCameraPose, FollowCamera, type CameraPose, type FollowTarget } from './FollowCamera';
 
 const CINEMATIC_BLEND_OUT = 0.9;
 const SCAN_ZOOM_DURATION = 1.2;
 const IMPACT_TRAUMA_SCALE = 0.05;
 const RESCUE_BLEND_RATE = 2;
+/** Camera shake per m/s of suspension activity. */
+const SUSPENSION_SHAKE = 0.9;
 /** Keep the camera this far in front of whatever blocks the view. */
 const OBSTACLE_MARGIN = 0.45;
 const OBSTACLE_RELAX = 3;
+/** Onboard cameras: field of view, gimbal tilt limits and default tilt (radians). */
+const NOSE_FOV = 82;
+const GIMBAL_FOV = 52;
+const GIMBAL_TILT = { min: -1.45, max: 0.25, rest: -0.32 };
+const GIMBAL_PAN_LIMIT = 2.4;
 
 interface CameraRigProps {
   session: GameSession;
@@ -54,14 +61,37 @@ export function CameraRig({ session, input, getVisualRoot }: CameraRigProps) {
   const { world, rapier } = useRapier();
   const ray = useMemo(() => new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }), [rapier]);
   const obstruction = useRef(1);
+  /** The scene camera's own near plane, restored when leaving the onboard views. */
+  const chaseNear = useRef<number | null>(null);
+  const onboard = useMemo(
+    () => ({
+      pos: new Vector3(),
+      quat: new Quaternion(),
+      euler: new Euler(0, 0, 0, 'YXZ'),
+      pan: 0,
+      tilt: GIMBAL_TILT.rest,
+      heading: 0,
+      time: 0,
+    }),
+    [],
+  );
 
-  useEffect(
-    () =>
+  useEffect(() => {
+    const offs = [
+      session.events.on('world:tremor', ({ intensity }) =>
+        follow.addTrauma(0.35 + intensity * 0.5),
+      ),
+      session.events.on('world:crash', ({ x, z, size }) => {
+        const p = session.vehicle.state.position;
+        const d = Math.hypot(x - p.x, z - p.z);
+        if (d < 40) follow.addTrauma(size * 0.3 * (1 - d / 40));
+      }),
       session.events.on('vehicle:impact', ({ damage }) => {
         follow.addTrauma(clamp(damage * IMPACT_TRAUMA_SCALE, 0.1, 0.8));
       }),
-    [session, follow],
-  );
+    ];
+    return () => offs.forEach((off) => off());
+  }, [session, follow]);
 
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.1);
@@ -77,9 +107,11 @@ export function CameraRig({ session, input, getVisualRoot }: CameraRigProps) {
     target.speed = state.speed;
     target.flightBlend = state.rig.armExtension;
     target.visualRoll = state.visualRoll;
-    target.roughness = state.grounded
-      ? getSurface(state.surface).roughness * clamp(state.speed / 10, 0, 1)
-      : 0;
+    // Shake follows how hard the suspension is actually working (bumps, stones, landings).
+    target.roughness =
+      state.mode === 'ROVER' && state.grounded
+        ? clamp(state.suspensionActivity * SUSPENSION_SHAKE, 0, 3)
+        : 0;
 
     const settings = useSettingsStore.getState().settings;
     input.consumeLook(dt, look);
@@ -102,6 +134,55 @@ export function CameraRig({ session, input, getVisualRoot }: CameraRigProps) {
     );
 
     const gameplay = session.gameplay.state;
+
+    // Onboard cameras (the player's choice; cinematics always use their own shots).
+    const view = gameplay.kind === 'CINEMATIC' ? 'chase' : session.cameraView;
+    const mount =
+      view !== 'chase' ? root?.getObjectByName(view === 'nose' ? 'cam-nose' : 'cam-gimbal') : null;
+    chaseNear.current ??= camera.near;
+    if (mount) {
+      mount.getWorldPosition(onboard.pos);
+      camera.position.copy(onboard.pos);
+      onboard.time += dt;
+      let fov: number;
+      if (view === 'nose') {
+        // Hard-mounted FPV: moves with the body; a little motor/rotor vibration.
+        mount.getWorldQuaternion(onboard.quat);
+        camera.quaternion.copy(onboard.quat);
+        const buzz = (state.rig.rotorSpeed * 0.8 + Math.min(1, state.speed / 15) * 0.4) * 0.0016;
+        camera.rotateX(Math.sin(onboard.time * 53) * buzz);
+        camera.rotateZ(Math.sin(onboard.time * 41 + 1.3) * buzz);
+        fov = NOSE_FOV;
+      } else {
+        // Stabilised gimbal: level horizon, follows the heading smoothly; the mouse pans/tilts.
+        let turn = state.heading - onboard.heading;
+        turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+        onboard.heading += turn * Math.min(1, dt * 5);
+        onboard.pan = clamp(onboard.pan + look.yaw, -GIMBAL_PAN_LIMIT, GIMBAL_PAN_LIMIT);
+        onboard.tilt = clamp(onboard.tilt + look.pitch, GIMBAL_TILT.min, GIMBAL_TILT.max);
+        onboard.euler.set(onboard.tilt, -onboard.heading - onboard.pan, 0, 'YXZ');
+        camera.quaternion.setFromEuler(onboard.euler);
+        fov = GIMBAL_FOV;
+      }
+      if (import.meta.env.DEV && window.__twCamera) {
+        const { position, target } = window.__twCamera;
+        camera.position.set(position[0], position[1], position[2]);
+        camera.lookAt(target[0], target[1], target[2]);
+      }
+      if (Math.abs(camera.fov - fov) > 0.01 || camera.near !== 0.05) {
+        camera.fov = fov;
+        camera.near = 0.05;
+        camera.updateProjectionMatrix();
+      }
+      session.cameraAim.pan = onboard.pan;
+      session.cameraAim.tilt = onboard.tilt;
+      return;
+    }
+    if (chaseNear.current !== null && camera.near !== chaseNear.current) {
+      camera.near = chaseNear.current;
+      camera.updateProjectionMatrix();
+    }
+
     shotContext.x = worldPosition.x;
     shotContext.y = worldPosition.y;
     shotContext.z = worldPosition.z;
@@ -111,7 +192,10 @@ export function CameraRig({ session, input, getVisualRoot }: CameraRigProps) {
     if (gameplay.kind === 'CINEMATIC') {
       blend.current.cinematic = 1;
       blend.current.lastShot = gameplay.shot;
-      pose = evaluateShot(gameplay.shot, session.cinematicProgress, shotContext, cinematicPose);
+      pose =
+        gameplay.shot === 'handover' && session.handover
+          ? handoverCamera(session.handover, session.handoverTime, shotContext, cinematicPose)
+          : evaluateShot(gameplay.shot, session.cinematicProgress, shotContext, cinematicPose);
     } else if (blend.current.cinematic > 0) {
       blend.current.cinematic = Math.max(0, blend.current.cinematic - dt / CINEMATIC_BLEND_OUT);
       pose = mixPoses(followPose, cinematicPose, blend.current.cinematic, blended);
@@ -176,6 +260,12 @@ export function CameraRig({ session, input, getVisualRoot }: CameraRigProps) {
     camera.position.set(pose.lookX + dx * k, pose.lookY + dy * k, pose.lookZ + dz * k);
     camera.up.set(0, 1, 0);
     camera.lookAt(pose.lookX, pose.lookY, pose.lookZ);
+    // Development-only inspection camera (set window.__twCamera = { position, target }).
+    if (import.meta.env.DEV && window.__twCamera) {
+      const { position, target } = window.__twCamera;
+      camera.position.set(position[0], position[1], position[2]);
+      camera.lookAt(target[0], target[1], target[2]);
+    }
     camera.rotateZ(pose.roll);
     if (Math.abs(camera.fov - pose.fov) > 0.01) {
       camera.fov = pose.fov;

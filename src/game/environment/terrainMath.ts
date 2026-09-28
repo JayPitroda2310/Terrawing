@@ -45,3 +45,14 @@ export function sampleProfile(profile: Float32Array, t: number): number {
 export function riverLevelAt(river: GeneratedRiver, t: number): number {
   return lerp(river.levelStart, river.levelEnd, t);
 }
+
+/**
+ * Surface current speed (m/s) at normalised position t along the river. Mean speed follows the
+ * channel gradient (Manning-style, v ∝ √slope); pools and rapids alternate along the course.
+ */
+export function riverSpeedAt(river: GeneratedRiver, t: number): number {
+  const slope = Math.max(0, river.levelStart - river.levelEnd) / Math.max(1, river.line.length);
+  const mean = Math.min(3.6, Math.max(0.7, 22 * Math.sqrt(slope)));
+  const reaches = Math.sin(t * 23.0 + 1.3) * 0.6 + Math.sin(t * 57.0 + 0.4) * 0.4;
+  return mean * (0.8 + 0.35 * reaches);
+}

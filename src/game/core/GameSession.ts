@@ -1,8 +1,9 @@
 import type { EnvironmentDefinition } from '@/data/environments/environmentSchema';
+import { puddleAt } from '@/game/environment/puddles';
 import { getSurface } from '@/data/surfaces/surfaces';
 import type { VehicleConfig } from '@/data/vehicles';
 import type { TerrainQuery } from '@/game/environment/TerrainQuery';
-import type { ControlAxes } from '@/game/input/InputManager';
+import type { AxisMode, ControlAxes } from '@/game/input/InputManager';
 import type { GameAction } from '@/game/input/actions';
 import type { MissionDefinition, ScanCategory } from '@/game/missions/MissionDefinition';
 import { MissionManager } from '@/game/missions/MissionManager';
@@ -17,7 +18,7 @@ import type { ScannerTarget } from '@/game/scanner/ScannerTarget';
 import { BatterySystem, type BatteryActivity } from '@/game/systems/BatterySystem';
 import { DamageSystem } from '@/game/systems/DamageSystem';
 import { HazardSystem, type HazardTransition } from '@/game/systems/HazardSystem';
-import { InteractionSystem } from '@/game/systems/InteractionSystem';
+import { InteractionSystem, STOP_VEHICLE } from '@/game/systems/InteractionSystem';
 import { RadioSystem } from '@/game/systems/RadioSystem';
 import { SignalSystem } from '@/game/systems/SignalSystem';
 import { WeatherSystem } from '@/game/systems/WeatherSystem';
@@ -26,11 +27,20 @@ import { DEG2RAD, RAD2DEG } from '@/utils/math/scalar';
 import { EventBus } from './EventBus';
 import type { FailureReason, GameEvents } from './GameEvents';
 import { GameplayStateMachine, type CinematicShotId, type VehicleMode } from './GameState';
+import {
+  createHandoverPlan,
+  type HandoverPlan,
+  planTransfer,
+  scheduleDeparture,
+  SLOT_X,
+  transferDoneAt,
+} from '@/game/rescue/handover';
+import { SURVIVOR_JACKETS } from '@/game/rescue/humanRig';
 import { createTelemetry, type HudWarning, type Telemetry } from './Telemetry';
 
 /** The subset of input the simulation needs; satisfied by InputManager and by test doubles. */
 export interface SessionInput {
-  sampleAxes(out: ControlAxes): ControlAxes;
+  sampleAxes(out: ControlAxes, mode: AxisMode): ControlAxes;
   consumePressed(action: GameAction): boolean;
   clearPressed(): void;
 }
@@ -49,8 +59,13 @@ const CINEMATIC_DURATIONS: Readonly<Record<CinematicShotId, number>> = {
   missionIntro: 5.5,
   missionComplete: 5,
   rescue: 3,
+  handover: 30,
 };
+/** Player camera views: third-person chase, the nose FPV camera, the stabilised belly gimbal. */
+export type CameraView = 'chase' | 'nose' | 'gimbal';
+
 const FAILURE_DELAY = 2.2;
+const HANDOVER_HOLD = 'HOLD POSITION — PATIENT TRANSFER IN PROGRESS';
 const VISUAL_CONTACT_FLARE = 55;
 const VISUAL_CONTACT_DEFAULT = 22;
 const CLASSIFY_ON_ARRIVAL = 30;
@@ -64,12 +79,22 @@ const CHARGE_MAX_SPEED = 1;
 
 let nextSessionId = 1;
 
-const ZERO_AXES: ControlAxes = { throttle: 0, steer: 0, lift: 0, brake: false };
+const ZERO_AXES: ControlAxes = { throttle: 0, steer: 0, lift: 0, strafe: 0, brake: false };
 
 /**
  * A single run of a mission. Owns every gameplay system and advances them in a fixed-step
  * simulation. Rendering reads from it; React never drives it directly.
  */
+/** Patient harm per m/s of collision speed, and from rough riding above a tolerance. */
+const PATIENT_IMPACT_HARM = 4;
+const PATIENT_RIDE_TOLERANCE = 2.5;
+const PATIENT_RIDE_HARM = 1.6;
+
+/** Seconds between aftershocks, and flood rise (m/s at full rain) and its limit (m). */
+const TREMOR_INTERVAL = [28, 55] as const;
+const FLOOD_RISE_RATE = 0.0012;
+const FLOOD_MAX_RISE = 1.4;
+
 export class GameSession {
   readonly id = nextSessionId++;
   readonly mission: MissionDefinition;
@@ -103,7 +128,7 @@ export class GameSession {
   invulnerable = false;
 
   private readonly input: SessionInput;
-  private readonly axes: ControlAxes = { throttle: 0, steer: 0, lift: 0, brake: false };
+  private readonly axes: ControlAxes = { throttle: 0, steer: 0, lift: 0, strafe: 0, brake: false };
   private readonly detections: ScanDetection[] = [];
   private readonly hazardTransitions: HazardTransition[] = [];
   private readonly missionContext: MissionContext;
@@ -221,13 +246,14 @@ export class GameSession {
         state.mode === 'FLIGHT' ? 'PROPULSION' : 'WHEELS',
       );
       if (damage > 0) {
+        this.jolt(impact * PATIENT_IMPACT_HARM);
         this.events.emit('vehicle:impact', { speed: impact, damage, position: state.position });
         this.emitIntegrityLevel();
       }
     }
 
     const playerControl = this.phase === 'active' && this.hasPlayerControl();
-    if (playerControl) this.input.sampleAxes(this.axes);
+    if (playerControl) this.input.sampleAxes(this.axes, state.mode);
     else Object.assign(this.axes, ZERO_AXES);
 
     if (this.phase === 'active') this.handleDiscreteInput();
@@ -236,7 +262,11 @@ export class GameSession {
       this.controlMode(),
       this.axes,
       { wind: this.weather.wind, serviceCeiling: this.environment.bounds.ceiling },
-      { tractionMultiplier: this.weather.tractionMultiplier },
+      {
+        tractionMultiplier: this.weather.tractionMultiplier,
+        terrain: this.terrain,
+        puddleAt: (x, z) => puddleAt(this.terrain, x, z, this.weather.wetness),
+      },
       dt,
     );
     if (result?.type === 'phase') {
@@ -256,10 +286,19 @@ export class GameSession {
       this.events.emit('vehicle:modeChanged', { mode });
     }
 
+    // Rough driving jolts the patients: suspension working hard beyond a smooth ride.
+    if (state.passengers > 0 && state.mode === 'ROVER') {
+      this.jolt(
+        Math.max(0, state.suspensionActivity - PATIENT_RIDE_TOLERANCE) * PATIENT_RIDE_HARM * dt,
+      );
+    }
+
     const [pushX, pushZ] = this.boundaryPush();
     this.vehicle.apply(pushX, pushZ);
 
     this.updateSystems(dt);
+    state.wetness = this.weather.wetness;
+    this.updateHandover(dt);
     this.updateCinematic(dt);
     this.updateEnding(dt);
   }
@@ -270,7 +309,7 @@ export class GameSession {
   }
 
   private controlMode(): ControlMode {
-    if (this.phase === 'ending') return 'hold';
+    if (this.phase === 'ending' || this.handoverHold) return 'hold';
     switch (this.gameplay.kind) {
       case 'FLIGHT':
         return 'flight';
@@ -288,10 +327,13 @@ export class GameSession {
     const kind = this.gameplay.kind;
     const scan = this.input.consumePressed('scan');
     const interact = this.input.consumePressed('interact');
+    if (this.input.consumePressed('camera') && kind !== 'CINEMATIC') this.cycleCameraView();
 
     if (kind === 'CINEMATIC') {
       const state = this.gameplay.state;
-      if ((scan || interact) && state.kind === 'CINEMATIC' && state.shot === 'missionIntro') {
+      const skippable =
+        state.kind === 'CINEMATIC' && (state.shot === 'missionIntro' || state.shot === 'handover');
+      if ((scan || interact) && skippable) {
         this.endCinematic();
       }
       return;
@@ -300,8 +342,28 @@ export class GameSession {
     if (interact && (kind === 'FLIGHT' || kind === 'ROVER')) this.handleInteractKey();
   }
 
+  /** Which camera the player is looking through: chase (third person) or TerraWing's own. */
+  cameraView: CameraView = 'chase';
+  /** Gimbal pan / tilt (radians), published by the camera rig for the camera-feed overlay. */
+  readonly cameraAim = { pan: 0, tilt: 0 };
+
+  private cycleCameraView(): void {
+    const order: CameraView[] = ['chase', 'nose', 'gimbal'];
+    this.cameraView = order[(order.indexOf(this.cameraView) + 1) % order.length]!;
+    this.events.emit('camera:view', { view: this.cameraView });
+  }
+
   private handleInteractKey(): void {
+    if (this.handoverHold) {
+      this.events.emit('notification', { text: HANDOVER_HOLD, tone: 'warning' });
+      return;
+    }
     const prompt = this.interaction.prompt;
+    if (prompt?.blockedReason === STOP_VEHICLE) {
+      // Next to a survivor but still rolling: don't fall through to transforming.
+      this.events.emit('notification', { text: STOP_VEHICLE, tone: 'warning' });
+      return;
+    }
     if (prompt && !prompt.blockedReason) {
       const started = this.interaction.tryStart();
       if (started) {
@@ -396,6 +458,8 @@ export class GameSession {
     }
 
     this.damage.tick(dt);
+    this.hazards.time = this.time;
+    this.updateDisasters(dt);
     const hazardDamage = this.hazards.update(
       s.position.x,
       s.position.z,
@@ -470,7 +534,14 @@ export class GameSession {
       return;
     }
     const mode = kind === 'FLIGHT' || kind === 'ROVER' ? s.mode : null;
-    this.interaction.updatePrompt(s.position.x, s.position.y, s.position.z, mode, s.grounded);
+    this.interaction.updatePrompt(
+      s.position.x,
+      s.position.y,
+      s.position.z,
+      mode,
+      s.grounded,
+      s.speed,
+    );
   }
 
   private updateVisualContact(): void {
@@ -511,6 +582,9 @@ export class GameSession {
     ctx.speed = s.speed;
     ctx.grounded = s.grounded;
     ctx.mode = this.hasPlayerControl() ? s.mode : null;
+    ctx.extractionBlocked =
+      this.vehicle.state.passengers > 0 ||
+      (this.handover !== null && this.handoverTime < transferDoneAt(this.handover));
 
     const update = this.missionManager.update(dt, ctx);
     for (const objective of update.completed) {
@@ -521,7 +595,12 @@ export class GameSession {
     }
     if (update.missionCompleted) {
       this.beginEnding();
-      this.startCinematic('missionComplete', 'NONE');
+      // Patients were handed over: the closing shot is the ambulances leaving for hospital.
+      if (this.handover && Number.isFinite(transferDoneAt(this.handover))) {
+        scheduleDeparture(this.handover, this.handoverTime);
+        this.startCinematic('handover', 'NONE');
+        this.notify('AMBULANCES EN ROUTE TO REGIONAL HOSPITAL', 'success');
+      } else this.startCinematic('missionComplete', 'NONE');
       return;
     }
 
@@ -567,20 +646,109 @@ export class GameSession {
     const state = this.gameplay.state;
     if (state.kind !== 'CINEMATIC') return;
     this.cinematicTime += dt;
-    if (this.cinematicTime >= CINEMATIC_DURATIONS[state.shot]) this.endCinematic();
+    if (this.cinematicTime >= this.cinematicDuration(state.shot)) this.endCinematic();
   }
 
   get cinematicProgress(): number {
     const state = this.gameplay.state;
     if (state.kind !== 'CINEMATIC') return 0;
-    return Math.min(1, this.cinematicTime / CINEMATIC_DURATIONS[state.shot]);
+    return Math.min(1, this.cinematicTime / this.cinematicDuration(state.shot));
+  }
+
+  private cinematicDuration(shot: CinematicShotId): number {
+    return shot === 'handover' && this.handover
+      ? Math.max(1, this.handover.duration - (this.handoverTime - this.cinematicTime))
+      : CINEMATIC_DURATIONS[shot];
+  }
+
+  /**
+   * Ambulance handover at the LZ: dispatched when TerraWing reaches the extraction zone with
+   * casualties aboard; the transfer plays out live once TerraWing is parked there in rover mode.
+   */
+  handover: HandoverPlan | null = null;
+  /** Handover clock (s since the ambulances were dispatched). */
+  handoverTime = 0;
+  private handoverStep = 0;
+
+  /** TerraWing must stay put while the medical team works on it. */
+  get handoverHold(): boolean {
+    const plan = this.handover;
+    return Boolean(
+      plan && plan.units.some((u) => u.planned) && this.handoverTime < transferDoneAt(plan),
+    );
+  }
+
+  private updateHandover(dt: number): void {
+    const s = this.vehicle.state;
+    const zone = this.zones.get(this.mission.extractionZoneId);
+    if (!this.handover) {
+      if (this.phase !== 'active' || !zone || this.survivors.passengers === 0) return;
+      if (!zone.contains(s.position.x, s.position.z)) return;
+      const lines = (kind: 'road' | 'trail') =>
+        this.terrain.data.paths.filter((p) => p.kind === kind).map((p) => p.line);
+      const roads = lines('road');
+      const aboard = this.survivors.survivors.filter((v) => v.onBoard);
+      this.handover = createHandoverPlan({
+        pad: { x: zone.position.x, z: zone.position.z, radius: zone.definition.radius },
+        roads: roads.length > 0 ? roads : lines('trail'),
+        patients: aboard.map((v, i) => ({
+          id: v.definition.id,
+          name: v.definition.name,
+          jacket: SURVIVOR_JACKETS[v.definition.callsign] ?? '#c0492a',
+          slotX: s.capsules[i]?.x ?? 0,
+        })),
+      });
+      this.handoverTime = 0;
+      this.handoverStep = 0;
+      this.notify('AMBULANCE DISPATCHED TO THE LZ — LAND AND SWITCH TO ROVER', 'info');
+      return;
+    }
+    const plan = this.handover;
+    this.handoverTime += dt;
+    const t = this.handoverTime;
+    // The transfer starts once TerraWing is parked in the LZ as a rover.
+    if (
+      !plan.units[0]!.planned &&
+      this.phase === 'active' &&
+      zone?.contains(s.position.x, s.position.z) &&
+      this.gameplay.kind === 'ROVER' &&
+      s.grounded &&
+      s.speed < 0.6
+    ) {
+      planTransfer(plan, { x: s.position.x, z: s.position.z, heading: s.heading }, t);
+      s.capsulesDetached = true;
+      this.notify('HOLD POSITION — MEDICAL TEAM COMING TO TERRAWING', 'warning');
+    }
+    // Casualties leave TerraWing as the team lifts each capsule off.
+    const aboard = plan.units.filter((u) => !(t >= u.liftEnd)).length;
+    if (s.passengers !== aboard) {
+      s.passengers = aboard;
+      this.notify('PATIENT TRANSFERRED TO THE MEDICAL TEAM', 'success');
+    }
+    const first = plan.units[0]!;
+    const beats: [number, () => void][] = [
+      [first.arrive, () => this.notify('AMBULANCE ON SCENE AT THE LZ', 'info')],
+      [
+        transferDoneAt(plan),
+        () => this.notify('PATIENTS LOADED — COMPLETE THE EXTRACTION', 'success'),
+      ],
+    ];
+    while (this.handoverStep < beats.length && t >= beats[this.handoverStep]![0]) {
+      beats[this.handoverStep]![1]();
+      this.handoverStep++;
+    }
+  }
+
+  private notify(text: string, tone: 'info' | 'success' | 'warning'): void {
+    this.events.emit('notification', { text, tone });
   }
 
   private endCinematic(): void {
     const state = this.gameplay.state;
     if (state.kind !== 'CINEMATIC') return;
     this.events.emit('cinematic:finished', { shot: state.shot });
-    if (state.shot === 'missionComplete') {
+    if (state.shot === 'missionComplete' || state.shot === 'handover') {
+      this.vehicle.state.passengers = 0;
       this.result = this.buildResult(true, null);
       this.phase = 'ended';
       this.events.emit('mission:completed', {});
@@ -672,12 +840,18 @@ export class GameSession {
       const def = survivor.definition;
       this.interaction.register({
         id: `secure:${def.id}`,
-        label: `ASSIST ${def.name.toUpperCase()}`,
-        progressLabel: 'DEPLOYING THERMAL SHELTER & LOCATOR BEACON',
+        label:
+          def.access === 'air'
+            ? `WINCH ${def.name.toUpperCase()}`
+            : `ASSIST ${def.name.toUpperCase()}`,
+        progressLabel:
+          def.access === 'air'
+            ? 'HOLD HOVER — LOWERING RESCUE HARNESS'
+            : 'DEPLOYING THERMAL SHELTER & LOCATOR BEACON',
         position: survivor.position,
         radius,
         duration: SECURE_DURATION,
-        requiresMode: 'ROVER',
+        requiresMode: def.access === 'air' ? 'FLIGHT' : 'ROVER',
         isAvailable: () => survivor.status === 'missing',
         onComplete: () => {
           this.survivors.secure(def.id, this.time);
@@ -689,6 +863,7 @@ export class GameSession {
             target.active = def.needsMedical && !survivor.medicalDelivered;
           }
           this.missionManager.notify({ type: 'survivorSecured', survivorId: def.id });
+          this.boardPatient(def.id);
           this.events.emit('survivor:secured', { survivorId: def.id });
           this.events.emit('notification', {
             text: `${def.name.toUpperCase()} SECURED — ${def.report.toUpperCase()}`,
@@ -709,7 +884,7 @@ export class GameSession {
           position: survivor.position,
           radius,
           duration: DELIVER_DURATION,
-          requiresMode: 'ROVER',
+          requiresMode: def.access === 'air' ? 'FLIGHT' : 'ROVER',
           isAvailable: () =>
             survivor.status === 'secured' &&
             !survivor.medicalDelivered &&
@@ -729,6 +904,7 @@ export class GameSession {
               supplyId: supply.definition.id,
               survivorId: def.id,
             });
+            this.boardPatient(def.id);
           },
         });
       }
@@ -784,6 +960,68 @@ export class GameSession {
     this.events.emit('integrity:level', { level: this.damage.level });
   }
 
+  private tremorTimer: number = TREMOR_INTERVAL[0];
+
+  /**
+   * Ongoing disasters: aftershocks shake the ground at intervals (earthquake zones), and flood
+   * water keeps rising while it rains.
+   */
+  private updateDisasters(dt: number): void {
+    if (this.mission.hazards.some((h) => h.kind === 'aftershock')) {
+      this.tremorTimer -= dt;
+      if (this.tremorTimer <= 0) {
+        this.tremorTimer =
+          TREMOR_INTERVAL[0] + Math.random() * (TREMOR_INTERVAL[1] - TREMOR_INTERVAL[0]);
+        this.events.emit('world:tremor', { intensity: 0.45 + Math.random() * 0.55 });
+      }
+    }
+    const data = this.terrain.data as { floodLevel?: number | null };
+    if (data.floodLevel != null && this.environment.flood) {
+      data.floodLevel = Math.min(
+        this.environment.flood.level + FLOOD_MAX_RISE,
+        data.floodLevel + FLOOD_RISE_RATE * dt * (0.4 + this.weather.rainIntensity),
+      );
+    }
+  }
+
+  /** 0..100 condition of the patients carried aboard (100 = arrived as they were loaded). */
+  patientCondition = 100;
+  private patientWarned = 0;
+
+  private boardPatient(id: string): void {
+    if (!this.survivors.board(id)) return;
+    const survivor = this.survivors.get(id)!;
+    const s = this.vehicle.state;
+    s.passengers = this.survivors.passengers;
+    s.capsules.push({
+      jacket: SURVIVOR_JACKETS[survivor.definition.callsign] ?? '#c0492a',
+      x: 0,
+    });
+    if (s.capsules.length === 2) {
+      s.capsules[0]!.x = -SLOT_X;
+      s.capsules[1]!.x = SLOT_X;
+    }
+    this.events.emit('notification', {
+      text: `${survivor.definition.name.toUpperCase()} ABOARD — CASUALTY POD SECURED. DRIVE SMOOTHLY`,
+      tone: 'info',
+    });
+  }
+
+  /** Harm to the patients aboard from a jolt (bumps, impacts, hard landings). */
+  private jolt(amount: number): void {
+    if (this.vehicle.state.passengers === 0 || amount <= 0) return;
+    this.patientCondition = Math.max(0, this.patientCondition - amount);
+    const level = this.patientCondition < 35 ? 2 : this.patientCondition < 70 ? 1 : 0;
+    if (level > this.patientWarned) {
+      this.patientWarned = level;
+      this.events.emit('notification', {
+        text:
+          level === 2 ? 'PATIENT CRITICAL — AVOID ALL IMPACTS' : 'PATIENT IN DISTRESS — SLOW DOWN',
+        tone: level === 2 ? 'danger' : 'warning',
+      });
+    }
+  }
+
   buildResult(success: boolean, reason: FailureReason | null): MissionResult {
     return rateMission(
       this.mission,
@@ -794,6 +1032,9 @@ export class GameSession {
         integrity: this.damage.integrity,
         timeSeconds: this.missionManager.elapsed,
         scannerAccuracy: this.scanner.accuracy,
+        patientCare: this.survivors.survivors.some((s) => s.onBoard)
+          ? this.patientCondition / 100
+          : 1,
       },
       success,
       reason,
@@ -838,12 +1079,17 @@ export class GameSession {
       : null;
     t.payload = s.payload ? (this.supplies.get(s.payload)?.definition.label ?? s.payload) : null;
     t.surface = getSurface(s.surface).label;
+    t.traction = Math.min(1, s.traction);
+    t.slip = s.slip;
+    t.selfRighting = s.selfRighting;
     t.missionTime = this.missionManager.elapsed;
     t.timeRemaining = this.missionManager.timeRemaining;
     const extract = this.missionManager.objectives.find((o) => o.definition.type === 'extract');
     t.extractionProgress = extract && extract.status === 'active' ? extract.progress : 0;
     t.survivorsSecured = this.survivors.securedCount;
     t.survivorsTotal = this.survivors.total;
+    t.passengers = this.vehicle.state.passengers;
+    t.patientCondition = this.patientCondition;
     t.warnings = this.collectWarnings();
     return t;
   }
@@ -880,7 +1126,8 @@ export class GameSession {
   // Debug hooks (development only — callers are tree-shaken from production builds)
   // ---------------------------------------------------------------------------------------------
 
-  debugTeleport(x: number, z: number): void {
+  debugTeleport(x: number, z: number, headingDeg?: number): void {
+    if (headingDeg !== undefined) this.vehicle.state.heading = headingDeg * DEG2RAD;
     const height = this.vehicle.state.mode === 'FLIGHT' ? 25 : 1;
     this.vehicle.teleport(x, z, height);
     this.signal.reset(x, this.terrain.heightAt(x, z) + height, z);

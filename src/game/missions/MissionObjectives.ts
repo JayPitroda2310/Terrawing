@@ -19,6 +19,8 @@ export interface MissionContext {
   speed: number;
   mode: VehicleMode | null;
   grounded: boolean;
+  /** Extraction can't complete yet (patients still being handed over to the medical team). */
+  extractionBlocked?: boolean;
   isInZone(zoneId: string, x: number, z: number): boolean;
 }
 
@@ -50,6 +52,7 @@ export function evaluateObjective(
         ctx.isInZone(def.zoneId, ctx.x, ctx.z) &&
         ctx.mode === 'ROVER' &&
         ctx.grounded &&
+        !ctx.extractionBlocked &&
         ctx.speed < EXTRACTION_MAX_SPEED;
       if (!holding) return Math.max(0, objective.progress - dt / def.holdSeconds);
       return Math.min(1, objective.progress + dt / def.holdSeconds);

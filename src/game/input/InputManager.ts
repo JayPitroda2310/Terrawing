@@ -20,10 +20,14 @@ export interface ControlAxes {
   throttle: number;
   /** -1 (left) .. 1 (right). */
   steer: number;
-  /** -1 (descend) .. 1 (ascend). */
+  /** -1 (descend) .. 1 (ascend). Flight only. */
   lift: number;
+  /** -1 (slide left) .. 1 (slide right). Flight only. */
+  strafe: number;
   brake: boolean;
 }
+
+export type AxisMode = 'FLIGHT' | 'ROVER';
 
 /**
  * Single entry point for player input. Combines keyboard, mouse and gamepad into
@@ -42,6 +46,8 @@ export class InputManager {
   private look: LookSettings = { sensitivity: 1, invertY: false };
   private readonly mouseDelta = { x: 0, y: 0 };
   private enabled = true;
+  /** Mode of the most recent axis sample; in flight the gamepad's right stick flies, not looks. */
+  private axisMode: AxisMode = 'ROVER';
 
   constructor() {
     this.keyboard = new KeyboardInput(() => this.capturedCodes);
@@ -117,17 +123,26 @@ export class InputManager {
     this.gamepad.poll();
   }
 
-  sampleAxes(out: ControlAxes): ControlAxes {
+  /** Samples continuous controls using the action layout of the given vehicle mode. */
+  sampleAxes(out: ControlAxes, mode: AxisMode): ControlAxes {
+    this.axisMode = mode;
     const pad = this.gamepad.state;
+    const on = this.enabled ? 1 : 0;
     const key = (action: GameAction) => (this.isHeld(action) ? 1 : 0);
-    out.throttle = clamp(
-      key('forward') - key('backward') + (this.enabled ? pad.throttle : 0),
-      -1,
-      1,
-    );
-    out.steer = clamp(key('right') - key('left') + (this.enabled ? pad.steer : 0), -1, 1);
-    out.lift = clamp(key('ascend') - key('descend') + (this.enabled ? pad.lift : 0), -1, 1);
-    out.brake = this.isHeld('brake');
+    if (mode === 'FLIGHT') {
+      // Mode 2: left stick = throttle/yaw, right stick = pitch/roll.
+      out.throttle = clamp(key('pitchForward') - key('pitchBack') - pad.lookY * on, -1, 1);
+      out.strafe = clamp(key('rollRight') - key('rollLeft') + pad.lookX * on, -1, 1);
+      out.steer = clamp(key('yawRight') - key('yawLeft') + pad.steer * on, -1, 1);
+      out.lift = clamp(key('ascend') - key('descend') + (pad.throttle + pad.lift) * on, -1, 1);
+      out.brake = false;
+    } else {
+      out.throttle = clamp(key('forward') - key('backward') + pad.throttle * on, -1, 1);
+      out.steer = clamp(key('right') - key('left') + pad.steer * on, -1, 1);
+      out.lift = 0;
+      out.strafe = 0;
+      out.brake = this.isHeld('brake');
+    }
     return out;
   }
 
@@ -136,7 +151,8 @@ export class InputManager {
     this.mouse.consumeDelta(this.mouseDelta);
     const sensitivity = this.look.sensitivity;
     const invert = this.look.invertY ? -1 : 1;
-    const pad = this.gamepad.state;
+    // In flight the right stick controls pitch/roll, so it no longer moves the camera.
+    const pad = this.axisMode === 'FLIGHT' ? { lookX: 0, lookY: 0 } : this.gamepad.state;
     out.yaw =
       (this.mouseDelta.x * MOUSE_RADIANS_PER_PIXEL + pad.lookX * GAMEPAD_LOOK_SPEED * dt) *
       sensitivity;

@@ -1,11 +1,18 @@
 import { formatKeyCode, type GameAction } from '@/game/input/actions';
 import { useSettingsStore } from '@/store/settingsStore';
 
-const ROWS: readonly { label: string; flight: GameAction[]; rover: GameAction[] | string }[] = [
-  { label: 'Forward / Back', flight: ['forward', 'backward'], rover: ['forward', 'backward'] },
-  { label: 'Yaw / Steer', flight: ['left', 'right'], rover: ['left', 'right'] },
-  { label: 'Ascend / Brake', flight: ['ascend'], rover: ['brake'] },
-  { label: 'Descend', flight: ['descend'], rover: '—' },
+type Cell = GameAction[] | string;
+
+const ROWS: readonly { label: string; flight: Cell; rover: Cell }[] = [
+  { label: 'Altitude up / down', flight: ['ascend', 'descend'], rover: '—' },
+  { label: 'Rotate / Steer', flight: ['yawLeft', 'yawRight'], rover: ['left', 'right'] },
+  {
+    label: 'Forward / Back',
+    flight: ['pitchForward', 'pitchBack'],
+    rover: ['forward', 'backward'],
+  },
+  { label: 'Slide left / right', flight: ['rollLeft', 'rollRight'], rover: '—' },
+  { label: 'Brake', flight: '—', rover: ['brake'] },
   { label: 'Scanner pulse', flight: ['scan'], rover: ['scan'] },
   { label: 'Transform / Interact', flight: ['interact'], rover: ['interact'] },
   { label: 'Pause', flight: ['pause'], rover: ['pause'] },
@@ -14,7 +21,7 @@ const ROWS: readonly { label: string; flight: GameAction[]; rover: GameAction[] 
 /** Live key reference reflecting the player's current bindings. */
 export function ControlsReference() {
   const bindings = useSettingsStore((s) => s.settings.keyBindings);
-  const keys = (actions: GameAction[] | string) =>
+  const keys = (actions: Cell) =>
     typeof actions === 'string'
       ? actions
       : actions.map((a) => formatKeyCode(bindings[a][0] ?? '?')).join(' / ');

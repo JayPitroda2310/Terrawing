@@ -9,6 +9,8 @@ export interface MissionStats {
   integrity: number;
   timeSeconds: number;
   scannerAccuracy: number;
+  /** 0..1 how well the patients carried aboard survived the ride (1 when none carried). */
+  patientCare?: number;
 }
 
 export interface MissionResult extends MissionStats {
@@ -35,7 +37,9 @@ export function rateMission(
 ): MissionResult {
   const { weights, parTimeSeconds, starThresholds } = mission.rewards;
   const components = {
-    survivors: stats.survivorsTotal > 0 ? stats.survivorsRescued / stats.survivorsTotal : 1,
+    survivors:
+      (stats.survivorsTotal > 0 ? stats.survivorsRescued / stats.survivorsTotal : 1) *
+      (0.7 + 0.3 * clamp01(stats.patientCare ?? 1)),
     time:
       stats.timeSeconds <= parTimeSeconds
         ? 1

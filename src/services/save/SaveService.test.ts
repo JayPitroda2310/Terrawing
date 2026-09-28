@@ -66,3 +66,13 @@ describe('LocalStorageSaveRepository', () => {
     await repository.clear();
   });
 });
+
+describe('recommendQuality', () => {
+  it('starts integrated GPUs on Low and discrete GPUs higher', async () => {
+    const { recommendQuality } = await import('@/utils/performance/gpuTier');
+    expect(recommendQuality('ANGLE (Intel, Intel(R) UHD Graphics Direct3D11)')).toBe('low');
+    expect(recommendQuality('ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11)')).toBe('high');
+    expect(recommendQuality('ANGLE (AMD, Radeon Pro 560)')).toBe('medium');
+    expect(recommendQuality(null)).toBe('medium');
+  });
+});

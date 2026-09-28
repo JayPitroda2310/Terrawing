@@ -1,5 +1,10 @@
 import { create } from 'zustand';
-import type { GameAction } from '@/game/input/actions';
+import {
+  canShareKey,
+  FLIGHT_PRESETS,
+  type FlightControlPreset,
+  type GameAction,
+} from '@/game/input/actions';
 import { createDefaultSettings, type Settings } from '@/services/save/saveSchema';
 
 interface SettingsStoreState {
@@ -8,6 +13,7 @@ interface SettingsStoreState {
   hydrate(settings: Settings): void;
   update<K extends keyof Settings>(key: K, value: Settings[K]): void;
   rebind(action: GameAction, code: string): void;
+  applyFlightPreset(preset: FlightControlPreset): void;
   resetDefaults(): void;
 }
 
@@ -17,16 +23,21 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
   update: (key, value) => set((state) => ({ settings: { ...state.settings, [key]: value } })),
   rebind: (action, code) =>
     set((state) => {
-      // A key can only drive one conflicting action; remove it from others (except shared defaults
-      // like Space for ascend/brake which live in different vehicle modes).
-      const sharedPairs: Record<string, GameAction> = { ascend: 'brake', brake: 'ascend' };
+      // A key drives only one action per vehicle mode; flight and rover actions may share keys.
       const keyBindings = { ...state.settings.keyBindings };
       for (const other of Object.keys(keyBindings) as GameAction[]) {
-        if (other === action || sharedPairs[action] === other) continue;
+        if (other === action || canShareKey(action, other)) continue;
         keyBindings[other] = keyBindings[other].filter((c) => c !== code);
       }
       keyBindings[action] = [code];
       return { settings: { ...state.settings, keyBindings } };
     }),
+  applyFlightPreset: (preset) =>
+    set((state) => ({
+      settings: {
+        ...state.settings,
+        keyBindings: { ...state.settings.keyBindings, ...FLIGHT_PRESETS[preset] },
+      },
+    })),
   resetDefaults: () => set({ settings: createDefaultSettings() }),
 }));

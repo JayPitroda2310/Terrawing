@@ -61,7 +61,7 @@ export type GameplayState =
 
 export type GameplayStateKind = GameplayState['kind'];
 
-export type CinematicShotId = 'missionIntro' | 'missionComplete' | 'rescue';
+export type CinematicShotId = 'missionIntro' | 'missionComplete' | 'rescue' | 'handover';
 
 const GAMEPLAY_TRANSITIONS: Readonly<Record<GameplayStateKind, readonly GameplayStateKind[]>> = {
   FLIGHT: ['TRANSFORMING', 'CINEMATIC', 'INTERACTING'],

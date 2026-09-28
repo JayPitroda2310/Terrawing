@@ -5,7 +5,11 @@ import type {
 } from '@/data/environments/environmentSchema';
 import { DEG2RAD } from '@/utils/math/scalar';
 import { Bridge } from './Bridge';
-import { Antenna, Cabin, Container, Floodlight, Pad, Tent, Windsock } from './Buildings';
+import { Antenna, Pad } from './Buildings';
+import { DomeTent, RescueTent, ShippingContainer } from './Tents';
+import { Floodlight } from './Lights';
+import { Cabin, CollapsedHouse, House } from './Houses';
+import { Flag, Windsock, type AirflowSampler } from './WindObjects';
 import { CarWreck, DebrisPile, FallenLogs, LooseDebris, RockShelter } from './Debris';
 import type { TerrainQuery } from './TerrainQuery';
 
@@ -14,6 +18,7 @@ interface StructuresProps {
   terrain: TerrainQuery;
   chargingPads: ReadonlySet<string>;
   getWind: () => { x: number; z: number };
+  getAirflow: AirflowSampler;
 }
 
 function hashSeed(id: string): number {
@@ -23,7 +28,7 @@ function hashSeed(id: string): number {
 }
 
 /** Instantiates every data-defined structure at its terrain position. */
-export function Structures({ environment, terrain, chargingPads, getWind }: StructuresProps) {
+export function Structures({ environment, terrain, chargingPads, getAirflow }: StructuresProps) {
   return (
     <group>
       {environment.structures.map((structure) => {
@@ -50,7 +55,13 @@ export function Structures({ environment, terrain, chargingPads, getWind }: Stru
             rotation={[0, -structure.rotationDeg * DEG2RAD, 0]}
             scale={structure.scale}
           >
-            {renderStructure(structure, chargingPads, getWind)}
+            {renderStructure(
+              structure,
+              chargingPads,
+              getAirflow,
+              environment.lighting.night,
+              localGround(terrain, x, z, y, structure.rotationDeg, structure.scale),
+            )}
           </group>
         );
       })}
@@ -58,23 +69,60 @@ export function Structures({ environment, terrain, chargingPads, getWind }: Stru
   );
 }
 
+/**
+ * Terrain height under a point given in a structure's local space, relative to the structure's
+ * origin. Lets props (fallen logs, debris) rest on sloping ground.
+ */
+export type LocalGround = (localX: number, localZ: number) => number;
+
+function localGround(
+  terrain: TerrainQuery,
+  originX: number,
+  originZ: number,
+  originY: number,
+  rotationDeg: number,
+  scale: number,
+): LocalGround {
+  const angle = -rotationDeg * DEG2RAD;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return (lx, lz) => {
+    const wx = originX + (lx * cos + lz * sin) * scale;
+    const wz = originZ + (-lx * sin + lz * cos) * scale;
+    return (terrain.heightAt(wx, wz) - originY) / scale;
+  };
+}
+
 function renderStructure(
   structure: StructureDefinition,
   chargingPads: ReadonlySet<string>,
-  getWind: () => { x: number; z: number },
+  getAirflow: AirflowSampler,
+  night: boolean,
+  ground: LocalGround,
 ): ReactNode {
   const seed = hashSeed(structure.id);
   switch (structure.kind) {
     case 'cabin':
       return <Cabin />;
     case 'tent':
-      return <Tent />;
+      if ((structure.params.style ?? 0) === 1) return <DomeTent variant={seed} />;
+      return (
+        <RescueTent
+          marking={
+            structure.id.includes('medical')
+              ? 'medical'
+              : structure.id.includes('command')
+                ? 'command'
+                : 'supply'
+          }
+        />
+      );
     case 'container':
-      return <Container />;
+      return <ShippingContainer />;
     case 'antenna':
       return <Antenna height={structure.params.height ?? 25} />;
     case 'floodlight':
-      return <Floodlight />;
+      return <Floodlight night={night} />;
     case 'helipad':
     case 'chargingPad':
       return (
@@ -86,13 +134,19 @@ function renderStructure(
     case 'landingZone':
       return <Pad kind="extraction" charging={chargingPads.has(structure.id)} />;
     case 'windsock':
-      return <Windsock getWind={getWind} />;
+      return <Windsock getAirflow={getAirflow} />;
+    case 'flag':
+      return <Flag getAirflow={getAirflow} />;
+    case 'house':
+      return <House variant={seed % 7} flatRoof={(structure.params.flatRoof ?? 0) > 0} />;
+    case 'collapsedHouse':
+      return <CollapsedHouse variant={seed % 7} />;
     case 'carWreck':
       return <CarWreck />;
     case 'debrisPile':
-      return <DebrisPile radius={structure.params.radius ?? 12} seed={seed} />;
+      return <DebrisPile radius={structure.params.radius ?? 12} seed={seed} ground={ground} />;
     case 'fallenLogs':
-      return <FallenLogs seed={seed} />;
+      return <FallenLogs seed={seed} ground={ground} />;
     case 'looseDebris':
       return (
         <LooseDebris

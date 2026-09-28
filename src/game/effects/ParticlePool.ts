@@ -33,6 +33,12 @@ export interface ParticlePoolOptions {
   lift?: number;
   /** 0 = hard dot, 1 = very soft puff. */
   softness: number;
+  /** Irregular, torn-edged wisps (dust, spray) instead of round puffs. */
+  wispy?: boolean;
+  /** Random swirling acceleration (m/s²): smoke curls instead of travelling in straight lines. */
+  turbulence?: number;
+  /** Colour particles blend towards over their life (smoke thins from black to pale grey). */
+  fadeTo?: readonly [number, number, number];
 }
 
 /**
@@ -50,6 +56,8 @@ export class ParticlePool {
   private readonly lives: Float32Array;
   private readonly sizeRange: Float32Array;
   private readonly baseAlpha: Float32Array;
+  private readonly startColors: Float32Array;
+  private time = 0;
   private cursor = 0;
   /** Extra wind acceleration applied to all particles. */
   readonly wind = { x: 0, z: 0 };
@@ -65,6 +73,7 @@ export class ParticlePool {
     this.lives = new Float32Array(n);
     this.sizeRange = new Float32Array(n * 2);
     this.baseAlpha = new Float32Array(n);
+    this.startColors = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) this.positions[i * 3 + 1] = -10000;
 
     const geometry = new BufferGeometry();
@@ -80,6 +89,7 @@ export class ParticlePool {
       depthWrite: false,
       blending,
       uniforms: { uScale: { value: 400 }, uSoftness: { value: options.softness } },
+      defines: options.wispy ? { WISPY: '' } : {},
       vertexShader: /* glsl */ `
         attribute float size;
         attribute float alpha;
@@ -87,7 +97,9 @@ export class ParticlePool {
         uniform float uScale;
         varying float vAlpha;
         varying vec3 vColor;
+        varying float vSeed;
         void main() {
+          vSeed = fract(float(gl_VertexID) * 0.6180339);
           vAlpha = alpha;
           vColor = color;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -99,9 +111,30 @@ export class ParticlePool {
         uniform float uSoftness;
         varying float vAlpha;
         varying vec3 vColor;
+        varying float vSeed;
+        float twHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float twNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(twHash(i), twHash(i + vec2(1, 0)), f.x),
+                     mix(twHash(i + vec2(0, 1)), twHash(i + vec2(1, 1)), f.x), f.y);
+        }
         void main() {
-          float d = length(gl_PointCoord - 0.5) * 2.0;
-          float a = 1.0 - smoothstep(1.0 - uSoftness, 1.0, d);
+          vec2 p = gl_PointCoord - 0.5;
+          float d = length(p) * 2.0;
+          #ifdef WISPY
+            // Rotate each particle's pattern, then tear the edge with two octaves of noise so it
+            // reads as a drifting wisp of dust rather than a disc.
+            float ang = vSeed * 6.2831;
+            p = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * p;
+            vec2 q = p * vec2(3.2, 5.0) + vSeed * 17.0;
+            float n = twNoise(q) * 0.65 + twNoise(q * 2.3 + 5.1) * 0.35;
+            float a = (1.0 - smoothstep(0.15, 1.0, d + (n - 0.5) * 0.9)) * smoothstep(0.25, 0.75, n + 0.2);
+            a *= a;
+          #else
+            float a = 1.0 - smoothstep(1.0 - uSoftness, 1.0, d);
+          #endif
           if (a <= 0.0 || vAlpha <= 0.0) discard;
           gl_FragColor = vec4(vColor, a * vAlpha);
           #include <fog_fragment>
@@ -125,6 +158,9 @@ export class ParticlePool {
     this.colors[i * 3] = o.r;
     this.colors[i * 3 + 1] = o.g;
     this.colors[i * 3 + 2] = o.b;
+    this.startColors[i * 3] = o.r;
+    this.startColors[i * 3 + 1] = o.g;
+    this.startColors[i * 3 + 2] = o.b;
     this.ages[i] = 0;
     this.lives[i] = o.life;
     this.sizeRange[i * 2] = o.startSize;
@@ -133,8 +169,10 @@ export class ParticlePool {
   }
 
   update(dt: number): void {
-    const { gravity, drag, lift = 0 } = this.options;
+    const { gravity, drag, lift = 0, turbulence = 0, fadeTo } = this.options;
     const dragFactor = Math.exp(-drag * dt);
+    this.time += dt;
+    const time = this.time;
     for (let i = 0; i < this.options.capacity; i++) {
       const life = this.lives[i]!;
       if (life <= 0) continue;
@@ -147,9 +185,27 @@ export class ParticlePool {
       }
       const t = age / life;
       const p = i * 3;
-      this.velocities[p] = this.velocities[p]! * dragFactor + this.wind.x * dt;
-      this.velocities[p + 1] = this.velocities[p + 1]! * dragFactor + (lift - gravity) * dt;
-      this.velocities[p + 2] = this.velocities[p + 2]! * dragFactor + this.wind.z * dt;
+      let tx = 0;
+      let ty = 0;
+      let tz = 0;
+      if (turbulence > 0) {
+        // Cheap swirl field: smooth in space and time, different for each particle.
+        const px = this.positions[p]!;
+        const py = this.positions[p + 1]!;
+        const pz = this.positions[p + 2]!;
+        tx = Math.sin(py * 1.7 + time * 1.9 + i * 0.37) * turbulence;
+        ty = Math.sin(pz * 1.3 - time * 1.4 + i * 0.61) * turbulence * 0.5;
+        tz = Math.cos(px * 1.5 + time * 1.6 + i * 0.83) * turbulence;
+      }
+      this.velocities[p] = this.velocities[p]! * dragFactor + (this.wind.x + tx) * dt;
+      this.velocities[p + 1] = this.velocities[p + 1]! * dragFactor + (lift - gravity + ty) * dt;
+      this.velocities[p + 2] = this.velocities[p + 2]! * dragFactor + (this.wind.z + tz) * dt;
+      if (fadeTo) {
+        const k = Math.min(1, t * 1.4);
+        this.colors[p] = this.startColors[p]! + (fadeTo[0] - this.startColors[p]!) * k;
+        this.colors[p + 1] = this.startColors[p + 1]! + (fadeTo[1] - this.startColors[p + 1]!) * k;
+        this.colors[p + 2] = this.startColors[p + 2]! + (fadeTo[2] - this.startColors[p + 2]!) * k;
+      }
       this.positions[p] = this.positions[p]! + this.velocities[p]! * dt;
       this.positions[p + 1] = this.positions[p + 1]! + this.velocities[p + 1]! * dt;
       this.positions[p + 2] = this.positions[p + 2]! + this.velocities[p + 2]! * dt;

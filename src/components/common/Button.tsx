@@ -31,7 +31,22 @@ export function Button({
       className={`group relative flex items-center gap-3 border font-semibold tracking-[0.18em] uppercase transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-ops-bg disabled:cursor-not-allowed disabled:opacity-40 ${
         size === 'lg' ? 'px-6 py-3.5 text-sm' : 'px-4 py-2.5 text-xs'
       } ${VARIANTS[variant]} ${className}`}
+      data-nav-button
       onMouseEnter={() => manager.audio.play('uiClick', { volume: 0.4 })}
+      onKeyDown={(event) => {
+        // Left / Right arrows move the selection along a row of buttons (wrapping around).
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        const row = event.currentTarget.parentElement;
+        const buttons = row
+          ? Array.from(row.querySelectorAll<HTMLButtonElement>('[data-nav-button]:not(:disabled)'))
+          : [];
+        if (buttons.length < 2) return;
+        event.preventDefault();
+        const index = buttons.indexOf(event.currentTarget);
+        const step = event.key === 'ArrowRight' ? 1 : -1;
+        buttons[(index + step + buttons.length) % buttons.length]?.focus();
+        manager.audio.play('uiClick', { volume: 0.4 });
+      }}
       onClick={(event) => {
         manager.audio.play('uiConfirm');
         onClick?.(event);

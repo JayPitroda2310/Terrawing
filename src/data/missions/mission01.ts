@@ -25,6 +25,7 @@ export const MISSION_01: MissionInput = {
       'TerraWing has been deployed.',
     ],
     tips: [
+      'Drone controls: W/S change altitude, A/D rotate, arrow keys (or numpad) fly forward and slide sideways.',
       'Flight is fast but drains the battery. Land and drive whenever the ground allows it.',
       'At least one hiker is reported injured. The medical kit is at the base.',
       'Rotor wash near unstable cliffs can trigger rockfall. Approach those areas on wheels.',
@@ -58,7 +59,7 @@ export const MISSION_01: MissionInput = {
       id: 'extraction',
       kind: 'extraction',
       label: 'EXTRACTION LZ',
-      position: [-262, 262],
+      position: [-253, 273],
       radius: 12,
       charging: true,
       alwaysVisible: true,
@@ -249,6 +250,6 @@ export const MISSION_01: MissionInput = {
     parTimeSeconds: 660,
     starThresholds: [0.5, 0.72, 0.88],
     weights: { survivors: 0.45, time: 0.2, integrity: 0.15, battery: 0.05, scanner: 0.15 },
-    unlocks: [],
+    unlocks: ['mission-02'],
   },
 };

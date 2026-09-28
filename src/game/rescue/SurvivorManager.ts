@@ -10,6 +10,8 @@ export interface SurvivorRuntime {
   medicalDelivered: boolean;
   /** Session time the survivor was secured (drives the beacon animation). */
   securedAt: number;
+  /** Carried aboard TerraWing in the casualty pod (injured survivors, once stabilised). */
+  onBoard: boolean;
 }
 
 /** Owns the runtime state of every survivor in the mission. */
@@ -21,10 +23,11 @@ export class SurvivorManager {
       const [x, z] = definition.position;
       return {
         definition,
-        position: { x, y: terrain.heightAt(x, z), z },
+        position: { x, y: terrain.heightAt(x, z) + definition.elevation, z },
         status: 'missing' as const,
         medicalDelivered: false,
         securedAt: -1,
+        onBoard: false,
       };
     });
   }
@@ -35,6 +38,20 @@ export class SurvivorManager {
 
   get securedCount(): number {
     return this.survivors.filter((s) => s.status === 'secured').length;
+  }
+
+  /** Survivors currently being carried in the casualty pod. */
+  get passengers(): number {
+    return this.survivors.filter((s) => s.onBoard).length;
+  }
+
+  /** Injured survivors are evacuated aboard once they no longer need treatment on site. */
+  board(id: string): boolean {
+    const survivor = this.get(id);
+    if (!survivor || survivor.onBoard || survivor.definition.condition === 'stable') return false;
+    if (survivor.definition.needsMedical && !survivor.medicalDelivered) return false;
+    survivor.onBoard = true;
+    return true;
   }
 
   get total(): number {

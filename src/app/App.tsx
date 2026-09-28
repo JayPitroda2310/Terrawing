@@ -5,6 +5,7 @@ import { GameCanvas } from '@/components/game/GameCanvas';
 import { GameManager } from '@/game/core/GameManager';
 import { isMissionScreen, Screen } from '@/game/core/GameState';
 import { useGameStore } from '@/store/gameStore';
+import { ControlsIntro } from '@/ui/hud/ControlsIntro';
 import { HUD } from '@/ui/hud/HUD';
 import { detectWebGL } from '@/utils/performance/webgl';
 import { GameManagerContext } from './GameManagerContext';
@@ -55,6 +56,7 @@ export function App() {
 
 function GameShell() {
   const screen = useGameStore((s) => s.screen);
+  const controlsIntro = useGameStore((s) => s.controlsIntro);
   const session = useGameStore((s) => s.session);
   const fatalError = useGameStore((s) => s.fatalError);
   const debugOpen = useGameStore((s) => s.debugOpen);
@@ -66,6 +68,7 @@ function GameShell() {
     <div className="relative h-full w-full overflow-hidden" style={{ minWidth: MIN_WIDTH }}>
       <GameCanvas />
       {showHud && screen === Screen.PLAYING && <HUD session={session} />}
+      {screen === Screen.PLAYING && controlsIntro && <ControlsIntro />}
       <Suspense fallback={null}>{Overlay && <Overlay />}</Suspense>
       {DebugPanel && debugOpen && (
         <Suspense fallback={null}>

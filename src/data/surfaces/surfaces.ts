@@ -28,6 +28,10 @@ export interface SurfaceProperties {
   readonly dustColor: string;
   /** Integrity loss per second while the rover is on this surface. */
   readonly damagePerSecond: number;
+  /** Height (m) of the fine bumps under the wheels: stones, ruts, roots. */
+  readonly bumpAmplitude: number;
+  /** Rolling-resistance coefficient (fraction of wheel load resisting motion). */
+  readonly rollingResistance: number;
 }
 
 export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
@@ -38,6 +42,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.25,
     dustColor: '#6d7058',
     damagePerSecond: 0,
+    bumpAmplitude: 0.014,
+    rollingResistance: 0.035,
   },
   [SurfaceId.FOREST_FLOOR]: {
     label: 'FOREST',
@@ -46,6 +52,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.4,
     dustColor: '#5b5242',
     damagePerSecond: 0,
+    bumpAmplitude: 0.028,
+    rollingResistance: 0.05,
   },
   [SurfaceId.ROCK]: {
     label: 'ROCK',
@@ -54,6 +62,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.85,
     dustColor: '#8a8c88',
     damagePerSecond: 0,
+    bumpAmplitude: 0.055,
+    rollingResistance: 0.03,
   },
   [SurfaceId.MUD]: {
     label: 'MUD',
@@ -62,6 +72,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.35,
     dustColor: '#4a3c2c',
     damagePerSecond: 0,
+    bumpAmplitude: 0.018,
+    rollingResistance: 0.1,
   },
   [SurfaceId.GRAVEL]: {
     label: 'DEBRIS',
@@ -70,6 +82,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.7,
     dustColor: '#7b7468',
     damagePerSecond: 0,
+    bumpAmplitude: 0.04,
+    rollingResistance: 0.06,
   },
   [SurfaceId.ROAD]: {
     label: 'ROAD',
@@ -78,6 +92,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.05,
     dustColor: '#55595c',
     damagePerSecond: 0,
+    bumpAmplitude: 0.003,
+    rollingResistance: 0.015,
   },
   [SurfaceId.TRAIL]: {
     label: 'TRAIL',
@@ -86,6 +102,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.3,
     dustColor: '#5e5341',
     damagePerSecond: 0,
+    bumpAmplitude: 0.022,
+    rollingResistance: 0.03,
   },
   [SurfaceId.WATER]: {
     label: 'WATER',
@@ -94,6 +112,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.2,
     dustColor: '#9fb3bb',
     damagePerSecond: 4,
+    bumpAmplitude: 0.02,
+    rollingResistance: 0.25,
   },
   [SurfaceId.PAD]: {
     label: 'PAD',
@@ -102,6 +122,8 @@ export const SURFACES: Readonly<Record<SurfaceId, SurfaceProperties>> = {
     roughness: 0.02,
     dustColor: '#5a5f63',
     damagePerSecond: 0,
+    bumpAmplitude: 0.002,
+    rollingResistance: 0.012,
   },
 };
 

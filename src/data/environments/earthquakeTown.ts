@@ -1,0 +1,171 @@
+import { environmentSchema, type EnvironmentInput } from './environmentSchema';
+
+/**
+ * Mission 04 environment — a hill town after a strong earthquake.
+ *
+ * Layout (north is -Z):
+ *   SW  — rescue base and extraction LZ
+ *   C   — the town: main street (east–west, z = 40) and cross street (north–south, x = 0)
+ *   —     four houses have collapsed; streets are cracked and littered with debris
+ */
+const earthquakeTown: EnvironmentInput = {
+  id: 'earthquake-town',
+  name: 'Earthquake',
+  regionName: 'Central Highlands',
+  seed: 4417,
+  size: 1000,
+  resolution: 256,
+  geo: { latitude: 42.3503, longitude: 13.3995 },
+  terrain: {
+    baseHeight: 22,
+    hillAmplitude: 14,
+    hillScale: 260,
+    detailAmplitude: 1.6,
+    mountainHeight: 160,
+    mountainInner: 310,
+    mountainOuter: 530,
+    rockSlopeDeg: 38,
+    treeline: 150,
+    features: [
+      { kind: 'bump', id: 'north-hill', center: [40, -220], radius: 120, height: 34 },
+      { kind: 'bump', id: 'east-hill', center: [240, 180], radius: 110, height: 28 },
+      { kind: 'plateau', id: 'base', center: [-315, 295], radius: 78, blend: 60, height: 18 },
+      { kind: 'plateau', id: 'town', center: [0, 40], radius: 125, blend: 50, height: 24 },
+    ],
+  },
+  river: {
+    points: [
+      [250, -540],
+      [275, -300],
+      [235, -100],
+      [265, 100],
+      [240, 300],
+      [270, 540],
+    ],
+    halfWidth: 7,
+    depth: 2,
+    valleyWidth: 50,
+    levelStart: 22,
+    levelEnd: 10,
+    mudBank: 4,
+  },
+  roads: [
+    {
+      id: 'main-street',
+      points: [
+        [-300, 285],
+        [-240, 230],
+        [-190, 170],
+        [-150, 110],
+        [-118, 62],
+        [-95, 40],
+        [-40, 40],
+        [40, 40],
+        [140, 40],
+      ],
+      halfWidth: 4.5,
+      shoulder: 6,
+      damagedSections: [
+        [0.58, 0.62],
+        [0.82, 0.86],
+      ],
+    },
+    {
+      id: 'cross-street',
+      points: [
+        [0, -70],
+        [0, 0],
+        [0, 40],
+        [0, 90],
+        [6, 140],
+      ],
+      halfWidth: 4,
+      shoulder: 5,
+      damagedSections: [[0.15, 0.24]],
+    },
+  ],
+  trails: [],
+  regions: [
+    { id: 'north-woods', kind: 'forest', center: [40, -250], radius: [230, 110], density: 0.8 },
+    { id: 'west-woods', kind: 'forest', center: [-280, 0], radius: [120, 170], density: 0.7 },
+    { id: 'east-woods', kind: 'forest', center: [260, 160], radius: [120, 150], density: 0.6 },
+    { id: 'base-clearing', kind: 'clearing', center: [-315, 295], radius: [85, 85] },
+    { id: 'town', kind: 'clearing', center: [0, 40], radius: [130, 120] },
+    { id: 'rubble-a', kind: 'landslide', center: [-46, 22], radius: [12, 10] },
+    { id: 'rubble-b', kind: 'landslide', center: [46, 58], radius: [12, 10] },
+    { id: 'rubble-c', kind: 'landslide', center: [17, -30], radius: [10, 12] },
+    { id: 'rubble-d', kind: 'landslide', center: [-68, 58], radius: [12, 10] },
+  ],
+  structures: [
+    { id: 'base-flag', kind: 'flag', position: [-316, 287] },
+    { id: 'base-helipad', kind: 'helipad', position: [-330, 305] },
+    { id: 'tent-command', kind: 'tent', position: [-354, 322], rotationDeg: 15, scale: 1.2 },
+    { id: 'tent-medical', kind: 'tent', position: [-364, 298], rotationDeg: 5 },
+    { id: 'tent-supply', kind: 'tent', position: [-300, 334], rotationDeg: -10 },
+    { id: 'base-container', kind: 'container', position: [-342, 270], rotationDeg: 80 },
+    { id: 'relay-mast', kind: 'antenna', position: [-356, 282], params: { height: 30 } },
+    { id: 'flood-1', kind: 'floodlight', position: [-312, 326], rotationDeg: 200 },
+    { id: 'flood-2', kind: 'floodlight', position: [-346, 285], rotationDeg: 40 },
+    { id: 'extraction-lz', kind: 'landingZone', position: [-253, 272] },
+    { id: 'lz-windsock', kind: 'windsock', position: [-239, 260] },
+    // North side of main street (doors face the street, +Z).
+    { id: 'house-n1', kind: 'house', position: [-90, 25] },
+    { id: 'house-n2', kind: 'house', position: [-68, 24] },
+    { id: 'collapsed-a', kind: 'collapsedHouse', position: [-46, 24] },
+    { id: 'house-n4', kind: 'house', position: [-24, 25], params: { flatRoof: 1 } },
+    { id: 'house-n5', kind: 'house', position: [24, 25] },
+    { id: 'house-n6', kind: 'house', position: [46, 24], params: { flatRoof: 1 } },
+    { id: 'house-n7', kind: 'house', position: [68, 25] },
+    { id: 'house-n8', kind: 'house', position: [92, 25] },
+    // South side (doors face north, towards the street).
+    { id: 'house-s1', kind: 'house', position: [-90, 56], rotationDeg: 180 },
+    { id: 'collapsed-d', kind: 'collapsedHouse', position: [-68, 56], rotationDeg: 180 },
+    { id: 'house-s3', kind: 'house', position: [-46, 56], rotationDeg: 180 },
+    { id: 'house-s4', kind: 'house', position: [-24, 56], rotationDeg: 180 },
+    {
+      id: 'house-s5',
+      kind: 'house',
+      position: [24, 56],
+      rotationDeg: 180,
+      params: { flatRoof: 1 },
+    },
+    { id: 'collapsed-b', kind: 'collapsedHouse', position: [46, 56], rotationDeg: 180 },
+    { id: 'house-s7', kind: 'house', position: [68, 56], rotationDeg: 180 },
+    // Cross street, north of the square.
+    { id: 'house-w1', kind: 'house', position: [-16, -30], rotationDeg: -90 },
+    { id: 'collapsed-c', kind: 'collapsedHouse', position: [16, -30], rotationDeg: 90 },
+    { id: 'house-e2', kind: 'house', position: [16, -8], rotationDeg: 90 },
+    { id: 'house-w3', kind: 'house', position: [-16, 100], rotationDeg: -90 },
+    { id: 'house-e3', kind: 'house', position: [18, 100], rotationDeg: 90 },
+    { id: 'street-car', kind: 'carWreck', position: [70, 37], rotationDeg: 95 },
+    { id: 'street-debris', kind: 'debrisPile', position: [0, 122], params: { radius: 7 } },
+    {
+      id: 'loose-main',
+      kind: 'looseDebris',
+      position: [-50, 40],
+      params: { count: 6, radius: 4 },
+    },
+    {
+      id: 'loose-cross',
+      kind: 'looseDebris',
+      position: [0, -20],
+      params: { count: 5, radius: 3 },
+    },
+  ],
+  relay: { position: [-356, 282], mastHeight: 30, range: 950 },
+  bounds: { soft: 440, hard: 485, ceiling: 330 },
+  vegetation: { treeSpacing: 9, scatterTreeChance: 0.05, rockDensity: 0.6 },
+  lighting: {
+    sunDirection: [-0.4, 0.66, 0.4],
+    sunColor: '#efe4d2',
+    sunIntensity: 1.3,
+    skyColor: '#b3aea4',
+    groundColor: '#2a2722',
+    hemiIntensity: 0.3,
+    fogColor: '#a49c90',
+    environmentIntensity: 0.85,
+    skyIntensity: 0.9,
+  },
+};
+
+export const EARTHQUAKE_TOWN = environmentSchema.parse(earthquakeTown);

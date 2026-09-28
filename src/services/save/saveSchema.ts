@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { DEFAULT_KEY_BINDINGS, GAME_ACTIONS, type KeyBindings } from '@/game/input/actions';
 
-export const SAVE_VERSION = 1;
+/** v2: drone (Mode 2) flight controls — older saved key bindings are reset. */
+export const SAVE_VERSION = 2;
 
 export const graphicsQualitySchema = z.enum(['low', 'medium', 'high']);
 export type GraphicsQuality = z.infer<typeof graphicsQualitySchema>;
@@ -29,6 +30,8 @@ export const settingsSchema = z.object({
   motionEffects: z.boolean().default(true),
   reducedMotion: z.boolean().default(false),
   showSubtitles: z.boolean().default(true),
+  /** Spoken mission story and base radio calls (browser speech synthesis). */
+  voiceNarration: z.boolean().default(true),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 

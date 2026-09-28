@@ -12,6 +12,16 @@ export interface VehicleVisualState {
   forwardSpeed: number;
   steer: number;
   payload: string | null;
+  /** Casualties aboard (shows the casualty pod). */
+  passengers?: number;
+  /** 0..1 how wet the bodywork is (rain). */
+  wetness?: number;
+  capsules?: { jacket: string; x: number }[];
+  capsulesDetached?: boolean;
+  /** Per-wheel suspension/spin from the rover physics (absent for static displays). */
+  wheels?: readonly { compression: number; spin: number }[];
+  /** Actual front-wheel steering angle in radians. */
+  steerAngle?: number;
 }
 
 export interface VehicleVisualProps {
@@ -27,7 +37,8 @@ export function VehicleVisual({
   config,
   ...props
 }: VehicleVisualProps & { config: VehicleConfig }) {
-  const procedural = <TerraWingModel {...props} />;
+  const suspensionTop = config.rover.wheel.mountHeight - config.rover.suspension.restLength;
+  const procedural = <TerraWingModel {...props} suspensionTop={suspensionTop} />;
   if (config.visual.kind === 'procedural') return procedural;
   return (
     <AssetBoundary name={`vehicle model ${config.visual.url}`} fallback={procedural}>

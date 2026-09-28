@@ -16,17 +16,23 @@ npm run lint
 
 ## Controls
 
-| Action                 | Flight           | Rover            |
-| ---------------------- | ---------------- | ---------------- |
-| Forward / back         | W / S            | W / S            |
-| Yaw / steer            | A / D            | A / D            |
-| Ascend / brake         | Space            | Space            |
-| Descend                | Shift            | —                |
-| Scanner pulse          | Q                | Q                |
-| Transform / interact   | E                | E                |
-| Pause                  | Esc              | Esc              |
-| Camera                 | Mouse (click to capture) |          |
-| Debug panel (dev only) | F3               | F3               |
+Flight uses a drone-style **Mode 2** layout (two "sticks" on the keyboard):
+
+| Keys                    | Drone (flight)                         | Rover                |
+| ----------------------- | -------------------------------------- | -------------------- |
+| W / S                   | Altitude up / down (throttle)          | Forward / reverse    |
+| A / D                   | Rotate left / right (yaw)              | Steer                |
+| ↑ / ↓ (or Numpad 8 / 2) | Fly forward / back (pitch, nose tilts) | Forward / reverse    |
+| ← / → (or Numpad 4 / 6) | Slide left / right (roll, body banks)  | Steer                |
+| Space / Shift           | Extra climb / descend                  | Space = brake        |
+| Q                       | Scanner pulse                          | Scanner pulse        |
+| E                       | Land & transform / interact            | Transform / interact |
+| Esc                     | Pause                                  | Pause                |
+| Mouse                   | Camera look (click to capture)         |                      |
+| F3                      | Debug panel (dev builds only)          |                      |
+
+**Settings → Controls → Drone control layout** switches to an **Arcade** layout instead (W/S fly
+forward/back, Space/Shift climb/descend). Gamepads use the same Mode 2 mapping in flight.
 
 Keys can be rebound in **Settings → Controls**. `E` is context-sensitive: it interacts when a prompt
 is shown, otherwise it transforms.

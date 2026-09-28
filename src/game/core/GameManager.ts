@@ -12,6 +12,7 @@ import { useGameStore } from '@/store/gameStore';
 import { useMissionStore, type ObjectiveView } from '@/store/missionStore';
 import { useProgressStore } from '@/store/progressStore';
 import { useSettingsStore } from '@/store/settingsStore';
+import { narrator } from '@/services/audio/narrator';
 import { useTelemetryStore } from '@/store/telemetryStore';
 import { formatDistance } from '@/utils/helpers/format';
 import { logger } from '@/utils/helpers/logger';
@@ -150,7 +151,17 @@ export class GameManager {
     if (store.session !== session || store.screen !== Screen.LOADING) return;
     session.start();
     this.publishObjectives(session);
+    // Show the controls demo before play starts (skipped for automated browser tests).
+    const automated = typeof navigator !== 'undefined' && navigator.webdriver;
+    store.setControlsIntro(!automated);
     this.navigate(Screen.PLAYING);
+  }
+
+  /** Closes the controls demo and lets the mission run. */
+  finishControlsIntro(): void {
+    useGameStore.getState().setControlsIntro(false);
+    this.input.clearPressed();
+    this.input.mouse.requestLock();
   }
 
   pause(): void {
@@ -169,6 +180,8 @@ export class GameManager {
   }
 
   quitToMenu(): void {
+    narrator.cancel();
+    useGameStore.getState().setControlsIntro(false);
     this.endSession();
     this.navigate(Screen.MAIN_MENU);
   }
@@ -235,9 +248,14 @@ export class GameManager {
         if (state === 'good') feed('RELAY LINK RESTORED', 'info');
       }),
       events.on('supply:delivered', () => feed('MEDICAL KIT DELIVERED', 'success')),
-      events.on('radio:message', ({ id, speaker, text }) =>
-        useMissionStore.getState().setRadio({ id, speaker, text, createdAt: performance.now() }),
-      ),
+      events.on('radio:message', ({ id, speaker, text }) => {
+        useMissionStore.getState().setRadio({ id, speaker, text, createdAt: performance.now() });
+        const settings = useSettingsStore.getState().settings;
+        const clip = narrator.radioClip(session.mission.id, id);
+        if (settings.voiceNarration && clip) {
+          narrator.play(clip, { volume: settings.masterVolume * settings.sfxVolume });
+        }
+      }),
       events.on('mission:completed', () => this.finishMission(session)),
       events.on('mission:failed', () => this.finishMission(session)),
     ];

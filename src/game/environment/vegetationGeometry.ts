@@ -26,7 +26,7 @@ function paint(geometry: BufferGeometry, hex: string, shade = 0): BufferGeometry
 }
 
 const TRUNK_COLOR = '#3b2d22';
-const NEEDLE_COLORS = ['#1f2d1f', '#243426', '#2a3a28', '#2f402c'];
+const NEEDLE_COLORS = ['#233323', '#26382a', '#2b3d2b', '#30432f'];
 
 /** Conifer, about 9 m tall at scale 1, origin at the base of the trunk. */
 export function createTreeGeometry(detail: 'high' | 'low'): BufferGeometry {

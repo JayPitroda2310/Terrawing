@@ -7,20 +7,40 @@ import {
   InstancedMesh,
   Object3D,
   PlaneGeometry,
+  ShaderChunk,
   ShaderMaterial,
 } from 'three';
 import type { TerrainQuery } from '@/game/environment/TerrainQuery';
 import { createRandom, randomRange } from '@/utils/math/random';
 
+/**
+ * Aerial perspective never quite reaches 100%: distant ridges keep a trace of their own shading
+ * instead of dissolving into flat silhouettes. Shared with the mountain backdrop so haze always
+ * increases with distance.
+ */
+export const FOG_MAX = 0.88;
+
+const FOG_MIX = 'gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );';
+if (ShaderChunk.fog_fragment.includes(FOG_MIX)) {
+  ShaderChunk.fog_fragment = ShaderChunk.fog_fragment.replace(
+    FOG_MIX,
+    `gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, min( fogFactor, ${FOG_MAX.toFixed(2)} ) );`,
+  );
+}
+
 /** Exponential scene fog. Density comes from the weather system. */
-export function Fog({ color, density }: { color: string; density: number }) {
+export function Fog({ color, getDensity }: { color: string; getDensity: () => number }) {
   const scene = useThree((s) => s.scene);
   useEffect(() => {
-    scene.fog = new FogExp2(new Color(color), density);
+    scene.fog = new FogExp2(new Color(color), getDensity());
     return () => {
       scene.fog = null;
     };
-  }, [scene, color, density]);
+  }, [scene, color, getDensity]);
+  // Density follows the evolving weather.
+  useFrame(() => {
+    if (scene.fog instanceof FogExp2) scene.fog.density = getDensity();
+  });
   return null;
 }
 

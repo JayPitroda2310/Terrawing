@@ -1,6 +1,6 @@
 import { SurfaceId } from '@/data/surfaces/surfaces';
-import { createProjection, projectOnPolyline } from '@/utils/math/polyline';
-import { riverLevelAt, sampleGridHeight } from './terrainMath';
+import { createProjection, projectOnPolyline, samplePolyline } from '@/utils/math/polyline';
+import { riverLevelAt, riverSpeedAt, sampleGridHeight } from './terrainMath';
 
 export { sampleGridHeight };
 import type { TerrainData } from './TerrainData';
@@ -16,6 +16,8 @@ const NORMAL_EPSILON = 1.5;
 /** Read-only spatial queries over generated terrain. Safe to call every physics step. */
 export class TerrainQuery {
   private readonly projection = createProjection();
+  private readonly ahead = { x: 0, z: 0 };
+  private readonly behind = { x: 0, z: 0 };
 
   constructor(readonly data: TerrainData) {}
 
@@ -50,12 +52,15 @@ export class TerrainQuery {
     return d.surfaces[iz * d.verticesPerSide + ix] as SurfaceId;
   }
 
-  /** Water surface height if (x, z) is over the river, otherwise null. */
+  /** Water surface height if (x, z) is over the river or flood water, otherwise null. */
   waterLevelAt(x: number, z: number): number | null {
     const river = this.data.river;
     projectOnPolyline(river.line, x, z, this.projection);
-    if (this.projection.distance > river.halfWidth) return null;
-    return riverLevelAt(river, this.projection.t);
+    const riverLevel =
+      this.projection.distance > river.halfWidth ? null : riverLevelAt(river, this.projection.t);
+    const flood = this.data.floodLevel;
+    if (flood == null || this.heightAt(x, z) >= flood) return riverLevel;
+    return riverLevel === null ? flood : Math.max(flood, riverLevel);
   }
 
   /** Writes the closest point on the river centreline (with water level as y) into `out`. */
@@ -65,6 +70,37 @@ export class TerrainQuery {
     out.x = this.projection.x;
     out.z = this.projection.z;
     out.y = riverLevelAt(river, this.projection.t);
+    return out;
+  }
+
+  /**
+   * Surface water velocity (m/s, XZ) at a point: fastest in mid-channel, slowing towards the banks;
+   * flood water off the channel drifts slowly downstream. Zero on dry ground.
+   */
+  flowAt(x: number, z: number, out: MutableVec3): MutableVec3 {
+    out.x = 0;
+    out.y = 0;
+    out.z = 0;
+    const river = this.data.river;
+    projectOnPolyline(river.line, x, z, this.projection);
+    const t = this.projection.t;
+    const distance = this.projection.distance;
+    const flooded = this.data.floodLevel != null && this.heightAt(x, z) < this.data.floodLevel;
+    if (distance > river.halfWidth && !flooded) return out;
+    samplePolyline(river.line, Math.min(1, t + 0.002), this.ahead);
+    samplePolyline(river.line, Math.max(0, t - 0.002), this.behind);
+    let tx = this.ahead.x - this.behind.x;
+    let tz = this.ahead.z - this.behind.z;
+    const length = Math.hypot(tx, tz) || 1;
+    tx /= length;
+    tz /= length;
+    const across = Math.min(1, distance / river.halfWidth);
+    const speed =
+      distance <= river.halfWidth
+        ? riverSpeedAt(river, t) * (0.25 + 0.75 * (1 - across * across))
+        : 0.3;
+    out.x = tx * speed;
+    out.z = tz * speed;
     return out;
   }
 

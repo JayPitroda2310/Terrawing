@@ -1,7 +1,7 @@
-import { Environment, Lightformer } from '@react-three/drei';
-import { useFrame } from '@react-three/fiber';
+import { Environment } from '@react-three/drei';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
-import { BackSide, Vector3, type DirectionalLight, type HemisphereLight } from 'three';
+import { Vector3, type DirectionalLight, type HemisphereLight, type Texture } from 'three';
 import type { EnvironmentDefinition } from '@/data/environments/environmentSchema';
 
 const SHADOW_EXTENT = 70;
@@ -14,14 +14,30 @@ interface LightingProps {
   /** World position the shadow frustum should follow (usually TerraWing). */
   getFocus: () => { x: number; y: number; z: number };
   getFlash: () => number;
+  /** 0..1 daylight (fades towards dusk). */
+  getDaylight?: () => number;
+  /** HDR sky used for image-based lighting. */
+  environmentMap: Texture;
+  /** Strength of the image-based lighting. */
+  environmentIntensity: number;
 }
 
 /**
  * Overcast lighting: soft hemisphere fill plus a diffuse key light whose shadow frustum tracks the
- * player so shadow resolution is spent where it matters. A tiny baked environment gives metals and
- * wet surfaces something to reflect.
+ * player so shadow resolution is spent where it matters. The overcast HDRI provides image-based
+ * lighting, so metals, wet ground and puddles reflect the real sky.
  */
-export function Lighting({ lighting, shadows, shadowMapSize, getFocus, getFlash }: LightingProps) {
+export function Lighting({
+  lighting,
+  shadows,
+  shadowMapSize,
+  getFocus,
+  getFlash,
+  getDaylight,
+  environmentMap,
+  environmentIntensity,
+}: LightingProps) {
+  const scene = useThree((s) => s.scene);
   const sun = useRef<DirectionalLight>(null);
   const hemi = useRef<HemisphereLight>(null);
   const direction = useMemo(
@@ -63,8 +79,10 @@ export function Lighting({ lighting, shadows, shadowMapSize, getFocus, getFlash 
     );
     light.target.updateMatrixWorld();
     const flash = getFlash();
-    light.intensity = lighting.sunIntensity + flash * 3;
-    if (hemi.current) hemi.current.intensity = lighting.hemiIntensity + flash * 2;
+    const day = getDaylight?.() ?? 1;
+    light.intensity = lighting.sunIntensity * day + flash * 3;
+    if (hemi.current) hemi.current.intensity = lighting.hemiIntensity * day + flash * 2;
+    scene.environmentIntensity = environmentIntensity * (0.35 + 0.65 * day);
   });
 
   return (
@@ -79,28 +97,7 @@ export function Lighting({ lighting, shadows, shadowMapSize, getFocus, getFlash 
         intensity={lighting.sunIntensity}
         castShadow={shadows}
       />
-      <Environment resolution={64} frames={1} environmentIntensity={0.55}>
-        <mesh scale={60}>
-          <sphereGeometry args={[1, 16, 8]} />
-          <meshBasicMaterial color={lighting.fogColor} side={BackSide} />
-        </mesh>
-        <Lightformer
-          form="rect"
-          intensity={1.6}
-          color={lighting.skyColor}
-          position={[0, 30, 0]}
-          rotation-x={Math.PI / 2}
-          scale={[80, 80, 1]}
-        />
-        <Lightformer
-          form="rect"
-          intensity={0.25}
-          color={lighting.groundColor}
-          position={[0, -20, 0]}
-          rotation-x={-Math.PI / 2}
-          scale={[80, 80, 1]}
-        />
-      </Environment>
+      <Environment map={environmentMap} environmentIntensity={environmentIntensity} />
     </>
   );
 }

@@ -95,7 +95,13 @@ export function GameCanvas() {
     () => session?.vehicle.state.position ?? menuFocus,
     [session, menuFocus],
   );
-  const paused = screen !== Screen.PLAYING;
+  const getRotorWash = useCallback(() => {
+    if (!session) return null;
+    const state = session.vehicle.state;
+    return { ...state.position, strength: state.rig.rotorSpeed };
+  }, [session]);
+  const controlsIntro = useGameStore((s) => s.controlsIntro);
+  const paused = screen !== Screen.PLAYING || controlsIntro;
   // Dynamic resolution keeps frame rate up on weaker GPUs; resets whenever quality changes.
   const [dpr, setDpr] = useState<{ quality: string; value: number }>({
     quality,
@@ -121,7 +127,11 @@ export function GameCanvas() {
         far: graphics.drawDistance,
         position: [MENU_FOCUS.x + 15, 30, MENU_FOCUS.z + 15],
       }}
-      onCreated={({ gl }) => manager.input.mouse.attach(gl.domElement)}
+      onCreated={(state) => {
+        manager.input.mouse.attach(state.gl.domElement);
+        // Development-only handle for inspecting the scene from automated checks.
+        if (import.meta.env.DEV) (window as unknown as { __twThree?: unknown }).__twThree = state;
+      }}
       onPointerDown={() => {
         if (useGameStore.getState().screen === Screen.PLAYING) manager.input.mouse.requestLock();
       }}
@@ -152,6 +162,7 @@ export function GameCanvas() {
             graphics={graphics}
             chargingPads={chargingPads}
             getFocus={getFocus}
+            getRotorWash={getRotorWash}
           />
           {session ? (
             <MissionScene session={session} manager={manager} graphics={graphics} />

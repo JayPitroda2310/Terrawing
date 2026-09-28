@@ -51,6 +51,12 @@ export interface GameEvents extends Record<string, unknown> {
   'radio:message': { id: string; speaker: string; text: string };
   notification: { text: string; tone: NotificationTone };
   'weather:thunder': { intensity: number; delay: number };
+  /** The player switched camera view. */
+  'camera:view': { view: 'chase' | 'nose' | 'gimbal' };
+  /** An aftershock: the ground shakes (0..1 intensity). */
+  'world:tremor': { intensity: number };
+  /** Something heavy hit the ground (falling tree, boulder): size 0..1. */
+  'world:crash': { x: number; y: number; z: number; size: number };
   'boundary:warning': { active: boolean };
   'cinematic:finished': { shot: string };
 }

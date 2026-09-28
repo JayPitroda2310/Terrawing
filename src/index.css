@@ -1,8 +1,10 @@
 @import 'tailwindcss';
 
 @theme {
-  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-sans: 'Exo 2', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Consolas', monospace;
+  /* Brand typography: Audiowide echoes the rounded, wide letterforms of the TerraWing logo. */
+  --font-display: 'Audiowide', 'Exo 2', ui-sans-serif, system-ui, sans-serif;
 
   --color-ops-bg: #0a0d10;
   --color-ops-panel: rgb(11 15 19 / 0.72);
@@ -12,8 +14,10 @@
   --color-ops-text: #dfe7ec;
   --color-ops-dim: #8b99a3;
   --color-ops-faint: #56636c;
-  --color-ops-orange: #ff6a1a;
-  --color-ops-orange-dim: #b8561f;
+  /* Brand green from the TerraWing logo; used as the interface accent colour. */
+  --color-brand: #7fda59;
+  --color-ops-orange: #7fda59;
+  --color-ops-orange-dim: #4f9a34;
   --color-ops-cyan: #52d6d0;
   --color-ops-green: #5fdc7c;
   --color-ops-blue: #4ea4ff;
@@ -138,4 +142,50 @@ button {
 
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* Solid dark panel, matching the rest of the interface. */
+@utility glass {
+  background: rgb(9 12 15 / 0.9);
+  border: 1px solid rgb(214 228 236 / 0.12);
+}
+
+/* A dark keyboard keycap. */
+@utility keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.9rem;
+  height: 1.9rem;
+  padding: 0 0.45rem;
+  border-radius: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: #f3efe7;
+  background: #14191d;
+  border: 1px solid rgb(214 228 236 / 0.22);
+  border-bottom-width: 3px;
+  border-bottom-color: rgb(0 0 0 / 0.6);
+}
+
+/* Cockpit instrument bezel: chamfered corners, graphite gradient, a lit top edge and depth. */
+@utility bezel {
+  --chamfer: 12px;
+  position: relative;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.055), rgb(255 255 255 / 0) 38%),
+    linear-gradient(160deg, rgb(20 25 29 / 0.86), rgb(9 12 15 / 0.8));
+  clip-path: polygon(
+    var(--chamfer) 0,
+    100% 0,
+    100% calc(100% - var(--chamfer)),
+    calc(100% - var(--chamfer)) 100%,
+    0 100%,
+    0 var(--chamfer)
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    inset 0 0 0 1px rgb(214 228 236 / 0.1);
+  backdrop-filter: blur(6px);
 }

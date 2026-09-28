@@ -1,5 +1,9 @@
 import type { VehicleMode } from '@/game/core/GameState';
 
+/** Rescue work needs the rover (almost) stationary. */
+const MAX_INTERACT_SPEED = 1.5;
+export const STOP_VEHICLE = 'STOP THE VEHICLE';
+
 export interface Interactable {
   readonly id: string;
   /** Verb shown on the prompt, e.g. "ASSIST SURVIVOR A". */
@@ -40,7 +44,14 @@ export class InteractionSystem {
   }
 
   /** Updates the prompt for the vehicle's current position and mode. */
-  updatePrompt(x: number, y: number, z: number, mode: VehicleMode | null, grounded: boolean): void {
+  updatePrompt(
+    x: number,
+    y: number,
+    z: number,
+    mode: VehicleMode | null,
+    grounded: boolean,
+    speed = 0,
+  ): void {
     let best: Interactable | null = null;
     let bestDistance = Infinity;
     for (const interactable of this.interactables) {
@@ -68,6 +79,7 @@ export class InteractionSystem {
     } else if (!grounded && best.requiresMode === 'ROVER')
       blockedReason = 'VEHICLE MUST BE GROUNDED';
     else if (bestDistance > best.radius) blockedReason = 'MOVE CLOSER';
+    else if (speed > MAX_INTERACT_SPEED) blockedReason = STOP_VEHICLE;
     this.prompt = { interactable: best, blockedReason };
   }
 

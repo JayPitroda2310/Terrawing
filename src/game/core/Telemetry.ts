@@ -38,11 +38,20 @@ export interface Telemetry {
   interaction: { label: string; progress: number } | null;
   payload: string | null;
   surface: string;
+  /** Available grip under the wheels, 0..1 (rover). */
+  traction: number;
+  /** Wheelspin / sliding amount, 0..1 (rover). */
+  slip: number;
+  /** The rover is flipping itself back onto its wheels. */
+  selfRighting: boolean;
   missionTime: number;
   timeRemaining: number;
   extractionProgress: number;
   survivorsSecured: number;
   survivorsTotal: number;
+  /** Survivors carried aboard, and their condition 0..100. */
+  passengers: number;
+  patientCondition: number;
   warnings: HudWarning[];
 }
 
@@ -74,11 +83,16 @@ export function createTelemetry(): Telemetry {
     interaction: null,
     payload: null,
     surface: '',
+    traction: 1,
+    slip: 0,
+    selfRighting: false,
     missionTime: 0,
     timeRemaining: 0,
     extractionProgress: 0,
     survivorsSecured: 0,
     survivorsTotal: 0,
+    passengers: 0,
+    patientCondition: 100,
     warnings: [],
   };
 }

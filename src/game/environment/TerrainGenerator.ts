@@ -27,24 +27,49 @@ const ROAD_RIVER_CLEARANCE = 4;
 const ROAD_RIVER_BLEND = 12;
 const EDGE_NOISE_SCALE = 180;
 const EDGE_NOISE_AMPLITUDE = 45;
+/** Road corridors are carved this far below the asphalt profile (the asphalt has its own collider). */
+const ROADBED_DEPTH = 0.02;
+/** Length (m) of the gravel/dirt run-out beyond a road's end. */
+const ROAD_RUNOUT = 14;
 const PAD_RADIUS = 11;
+/** Extra level ground around a pad so its edge never overhangs a slope. */
+const PAD_LEVEL_MARGIN = 3;
+/** Distance over which the levelled pad blends back into the natural terrain. */
+const PAD_BLEND = 10;
+
+const WARP_SCALE = 260;
+const WARP_AMPLITUDE = 60;
+/** Relief (m above base height) where erosion starts and reaches full strength. */
+const EROSION_START = 4;
+const EROSION_FULL = 40;
+const EROSION_SCALE = 85;
+/** Gully depth as a fraction of relief, capped. */
+const EROSION_DEPTH = 0.16;
+const EROSION_MAX = 16;
 
 /** Natural terrain before any man-made or hydrological shaping. */
 class NaturalTerrain {
   private readonly hills: Noise2D;
   private readonly detail: Noise2D;
   private readonly peaks: Noise2D;
+  private readonly warp: Noise2D;
+  private readonly erosion: Noise2D;
 
   constructor(private readonly env: EnvironmentDefinition) {
     this.hills = createNoise2D(env.seed);
     this.detail = createNoise2D(env.seed + 101);
     this.peaks = createNoise2D(env.seed + 202);
+    this.warp = createNoise2D(env.seed + 707);
+    this.erosion = createNoise2D(env.seed + 808);
   }
 
   height(x: number, z: number): number {
     const t = this.env.terrain;
+    // Domain warp: hills and valleys meander instead of forming round blobs.
+    const wx = x + WARP_AMPLITUDE * fbm(this.warp, x / WARP_SCALE, z / WARP_SCALE, 2);
+    const wz = z + WARP_AMPLITUDE * fbm(this.warp, x / WARP_SCALE + 31, z / WARP_SCALE - 17, 2);
     let h = t.baseHeight;
-    h += t.hillAmplitude * fbm(this.hills, x / t.hillScale, z / t.hillScale, 4);
+    h += t.hillAmplitude * fbm(this.hills, wx / t.hillScale, wz / t.hillScale, 4);
     h += t.detailAmplitude * fbm(this.detail, x / 38, z / 38, 3);
 
     // Surrounding mountain ring — a rounded square so the valley reads as a basin.
@@ -53,11 +78,21 @@ class NaturalTerrain {
       EDGE_NOISE_AMPLITUDE * this.hills(x / EDGE_NOISE_SCALE + 17, z / EDGE_NOISE_SCALE - 9);
     const ring = smoothstep(t.mountainInner, t.mountainOuter, radial + jitter);
     if (ring > 0) {
-      const crest = 0.5 + 0.5 * ridged(this.peaks, x / 210, z / 210, 4);
+      const crest = 0.5 + 0.5 * ridged(this.peaks, wx / 210, wz / 210, 4);
       h += ring * ring * t.mountainHeight * crest;
     }
 
     for (const feature of t.features) h += this.featureContribution(feature, x, z);
+
+    // Erosion: raised ground is carved into spurs and gullies, deeper the higher it stands, so
+    // slopes read as weathered rather than smooth domes. Low valley floors are left alone.
+    const relief = h - t.baseHeight;
+    if (relief > EROSION_START) {
+      const mask = smoothstep(EROSION_START, EROSION_FULL, relief);
+      const ridges = ridged(this.erosion, wx / EROSION_SCALE, wz / EROSION_SCALE, 4);
+      const depth = Math.min(relief * EROSION_DEPTH, EROSION_MAX);
+      h += (ridges - 0.45) * depth * mask * t.erosion;
+    }
     return h;
   }
 
@@ -234,7 +269,7 @@ export function generateTerrain(env: EnvironmentDefinition): TerrainData {
         const { halfWidth, shoulder } = path.definition;
         projectOnPolyline(path.line, x, z, pathProjection);
         if (pathProjection.distance > halfWidth + shoulder + cellSize) continue;
-        const target = sampleProfile(path.profile, pathProjection.t) - 0.05;
+        const target = sampleProfile(path.profile, pathProjection.t) - ROADBED_DEPTH;
         const w =
           (1 -
             smoothstep(halfWidth + 0.5, halfWidth + shoulder + cellSize, pathProjection.distance)) *
@@ -242,6 +277,28 @@ export function generateTerrain(env: EnvironmentDefinition): TerrainData {
         h = lerp(h, target, w);
       }
       heights[index] = h;
+    }
+  }
+
+  // Pass 3 — helipads and landing zones: level the ground to one height so the pad surface and the
+  // physics ground are the same plane (no floating slab, no wheels sinking into it).
+  for (const pad of env.structures) {
+    if (pad.kind !== 'helipad' && pad.kind !== 'landingZone') continue;
+    const [px, pz] = pad.position;
+    const radius = PAD_RADIUS * pad.scale + PAD_LEVEL_MARGIN;
+    const target = sampleGridHeight(heights, verticesPerSide, cellSize, half, px, pz);
+    const reach = radius + PAD_BLEND;
+    const minX = Math.max(0, Math.floor((px - reach + half) / cellSize));
+    const maxX = Math.min(resolution, Math.ceil((px + reach + half) / cellSize));
+    const minZ = Math.max(0, Math.floor((pz - reach + half) / cellSize));
+    const maxZ = Math.min(resolution, Math.ceil((pz + reach + half) / cellSize));
+    for (let iz = minZ; iz <= maxZ; iz++) {
+      for (let ix = minX; ix <= maxX; ix++) {
+        const d = Math.hypot(-half + ix * cellSize - px, -half + iz * cellSize - pz);
+        if (d >= reach) continue;
+        const index = iz * verticesPerSide + ix;
+        heights[index] = lerp(target, heights[index]!, smoothstep(radius, reach, d));
+      }
     }
   }
 
@@ -276,7 +333,28 @@ export function generateTerrain(env: EnvironmentDefinition): TerrainData {
     paths,
   );
 
+  // Fire damage: 0..1 per vertex inside burnt regions, used to char the ground.
+  const burnt = env.regions.filter((r) => r.kind === 'burnt');
+  let scorch: Float32Array | undefined;
+  if (burnt.length > 0) {
+    scorch = new Float32Array(count);
+    const edge = createNoise2D(env.seed + 505);
+    for (let iz = 0; iz < verticesPerSide; iz++) {
+      for (let ix = 0; ix < verticesPerSide; ix++) {
+        const x = -half + ix * cellSize;
+        const z = -half + iz * cellSize;
+        let w = 0;
+        for (const region of burnt) w = Math.max(w, regionWeight(region, x, z) * region.density);
+        const n = edge(x / 18, z / 18) * 0.25;
+        scorch[iz * verticesPerSide + ix] = smoothstep(0.15, 0.55, w + n);
+      }
+    }
+  }
+
   return {
+    floodLevel: env.flood?.level ?? null,
+    treeline: env.terrain.treeline,
+    scorch,
     size: env.size,
     resolution,
     verticesPerSide,
@@ -322,6 +400,8 @@ function classifySurfaces(
     projectOnPolyline(river.line, x, z, projection);
     if (projection.distance < river.halfWidth - 0.5) return SurfaceId.WATER;
 
+    if (env.flood && height < env.flood.level - 0.2) return SurfaceId.MUD;
+
     for (const pad of pads) {
       if (Math.hypot(x - pad.position[0], z - pad.position[1]) < PAD_RADIUS * pad.scale) {
         return SurfaceId.PAD;
@@ -330,6 +410,24 @@ function classifySurfaces(
 
     for (const path of paths) {
       projectOnPolyline(path.line, x, z, projection);
+      // Beyond a road's end the roadbed runs on as a worn gravel/dirt track that narrows into the
+      // grass, so the road doesn't stop at a hard edge.
+      if (
+        path.kind === 'road' &&
+        (projection.t <= 0.0005 || projection.t >= 0.9995) &&
+        projection.distance <
+          path.definition.halfWidth * 0.9 + ROAD_RUNOUT * (0.6 + 0.4 * detail(x / 9, z / 9))
+      ) {
+        const runout = Math.min(
+          Math.hypot(x - path.line.points[0]![0], z - path.line.points[0]![1]),
+          Math.hypot(
+            x - path.line.points[path.line.points.length - 1]![0],
+            z - path.line.points[path.line.points.length - 1]![1],
+          ),
+        );
+        if (runout < ROAD_RUNOUT)
+          return runout < ROAD_RUNOUT * 0.45 ? SurfaceId.GRAVEL : SurfaceId.TRAIL;
+      }
       if (projection.distance < path.definition.halfWidth + 0.6) {
         const damaged = path.definition.damagedSections.some(
           ([from, to]) => projection.t >= from && projection.t <= to,
@@ -349,10 +447,15 @@ function classifySurfaces(
       if (region.kind === 'landslide') return SurfaceId.GRAVEL;
       if (region.kind === 'mud') return SurfaceId.MUD;
       if (region.kind === 'rocky' && n > -0.3) return SurfaceId.ROCK;
+      if (region.kind === 'burnt') return n > 0.45 ? SurfaceId.GRAVEL : SurfaceId.FOREST_FLOOR;
     }
 
     if (slope > rockSlope + n * 0.08) return SurfaceId.ROCK;
-    if (height > env.terrain.treeline + 25 * n) return SurfaceId.ROCK;
+    // Above the treeline: dry alpine meadow on gentle ground, scree and outcrops on the slopes.
+    if (height > env.terrain.treeline + 25 * n) {
+      if (slope < rockSlope * 0.45) return SurfaceId.GRASS;
+      return n > 0.25 ? SurfaceId.ROCK : SurfaceId.GRAVEL;
+    }
 
     for (const region of env.regions) {
       if (region.kind === 'forest' && regionWeight(region, x, z) > 0.3 + 0.2 * n) {

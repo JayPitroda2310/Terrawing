@@ -54,6 +54,10 @@ const SHOTS: Readonly<Record<CinematicShotId, ShotFn>> = {
     out.fov = 55;
     out.roll = 0;
   },
+  // Real framing comes from the handover timeline (see handoverCamera); this is the fallback.
+  handover(t, ctx, out) {
+    SHOTS.missionComplete(t, ctx, out);
+  },
   rescue(t, ctx, out) {
     // Low orbit framing both vehicle and survivor.
     const mx = (ctx.x + ctx.focusX) / 2;

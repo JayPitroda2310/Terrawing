@@ -1,9 +1,12 @@
+import type { Collider } from '@dimforge/rapier3d-compat';
 import type { RapierContext } from '@react-three/rapier';
 
 export type StaticShape =
   | { kind: 'cylinder'; x: number; y: number; z: number; halfHeight: number; radius: number }
   | { kind: 'ball'; x: number; y: number; z: number; radius: number }
   | { kind: 'cone'; x: number; y: number; z: number; halfHeight: number; radius: number }
+  /** Convex hull of the given points (x, y, z triples, world space). */
+  | { kind: 'convex'; points: Float32Array }
   | {
       kind: 'cuboid';
       x: number;
@@ -17,12 +20,14 @@ export type StaticShape =
 
 /**
  * Creates many static colliders on a single fixed rigid body in one go. Far cheaper than mounting
- * thousands of collider components. Returns a disposer.
+ * thousands of collider components. Returns a disposer. `out`, when given, receives each shape's
+ * collider (null where a hull could not be built), in shape order.
  */
 export function createStaticColliders(
   { world, rapier }: Pick<RapierContext, 'world' | 'rapier'>,
   shapes: readonly StaticShape[],
   friction = 0.8,
+  out?: (Collider | null)[],
 ): () => void {
   const body = world.createRigidBody(rapier.RigidBodyDesc.fixed());
   for (const shape of shapes) {
@@ -37,6 +42,15 @@ export function createStaticColliders(
       case 'cone':
         desc = rapier.ColliderDesc.cone(shape.halfHeight, shape.radius);
         break;
+      case 'convex': {
+        const hull = rapier.ColliderDesc.convexHull(shape.points);
+        if (!hull) {
+          out?.push(null);
+          continue;
+        }
+        out?.push(world.createCollider(hull.setFriction(friction), body));
+        continue;
+      }
       case 'cuboid': {
         desc = rapier.ColliderDesc.cuboid(shape.hx, shape.hy, shape.hz);
         const half = shape.rotationY / 2;
@@ -45,7 +59,7 @@ export function createStaticColliders(
       }
     }
     desc.setTranslation(shape.x, shape.y, shape.z).setFriction(friction);
-    world.createCollider(desc, body);
+    out?.push(world.createCollider(desc, body));
   }
   return () => {
     // The world may already be freed when the Physics component unmounts first.

@@ -28,7 +28,8 @@ export function MissionSelect() {
         <ul className="grid grid-cols-2 gap-3 xl:grid-cols-3">
           {MISSION_CATALOG.map((entry, index) => {
             const record = progress.missions[entry.id];
-            const unlocked = entry.available && progress.unlocked.includes(entry.id);
+            // Every finished operation is open to play in any order.
+            const unlocked = entry.available;
             return (
               <li
                 key={entry.id}

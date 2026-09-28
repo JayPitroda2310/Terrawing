@@ -17,6 +17,8 @@ interface GameStoreState {
   debugOpen: boolean;
   debugColliders: boolean;
   pointerLocked: boolean;
+  /** The glass controls demo shown when a mission starts (the world is paused meanwhile). */
+  controlsIntro: boolean;
   setScreen(screen: Screen): boolean;
   setSession(session: GameSession | null): void;
   setSelectedMission(id: string): void;
@@ -25,6 +27,7 @@ interface GameStoreState {
   toggleDebug(): void;
   setDebugColliders(value: boolean): void;
   setPointerLocked(value: boolean): void;
+  setControlsIntro(value: boolean): void;
 }
 
 export const useGameStore = create<GameStoreState>((set, get) => ({
@@ -37,6 +40,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   debugOpen: false,
   debugColliders: false,
   pointerLocked: false,
+  controlsIntro: false,
   setScreen(screen) {
     const current = get().screen;
     if (current === screen) return true;
@@ -54,4 +58,5 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   toggleDebug: () => set((s) => ({ debugOpen: !s.debugOpen })),
   setDebugColliders: (debugColliders) => set({ debugColliders }),
   setPointerLocked: (pointerLocked) => set({ pointerLocked }),
+  setControlsIntro: (controlsIntro) => set({ controlsIntro }),
 }));

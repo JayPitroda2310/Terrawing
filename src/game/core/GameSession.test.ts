@@ -11,7 +11,7 @@ import { GameSession, type SessionInput } from './GameSession';
 const DT = 1 / 60;
 
 class ScriptedInput implements SessionInput {
-  axes: ControlAxes = { throttle: 0, steer: 0, lift: 0, brake: false };
+  axes: ControlAxes = { throttle: 0, steer: 0, lift: 0, strafe: 0, brake: false };
   private readonly pressed = new Set<GameAction>();
   press(action: GameAction): void {
     this.pressed.add(action);
@@ -165,7 +165,7 @@ describe('GameSession — Mission 01 loop', () => {
     // Survivors counted as rescued for the report.
     for (const s of session.survivors.survivors) s.status = 'secured';
     session.missionManager.getObjective('reach-extraction')!.status = 'active';
-    const [ex, ez] = [-262, 262];
+    const [ex, ez] = session.mission.zones.find((z) => z.id === 'extraction')!.position;
     body.teleport(ex, terrain.heightAt(ex, ez), ez, 0);
     run(1);
     expect(session.missionManager.getObjective('extract')?.status).toBe('active');

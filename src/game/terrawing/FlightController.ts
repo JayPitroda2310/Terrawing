@@ -4,7 +4,8 @@ import { clamp, damp, DEG2RAD, moveTowards } from '@/utils/math/scalar';
 import { headingForward, type VehicleState, type VelocityCommand } from './VehicleState';
 
 export interface FlightEnvironment {
-  wind: { x: number; z: number };
+  /** Air movement (m/s); `y` is rain downdraft / turbulence. */
+  wind: { x: number; y?: number; z: number };
   /** Height of the terrain datum directly below (for the service ceiling). */
   serviceCeiling: number;
 }
@@ -16,6 +17,8 @@ const VISUAL_TILT_RESPONSE = 4;
 const ACCEL_TILT_GAIN = 0.035;
 /** Fraction of wind drift that remains while hovering with position hold. */
 const HOVER_WIND_FRACTION = 0.15;
+/** Share of unintended sideways drift shown as bank. */
+const DRIFT_BANK_WEIGHT = 0.25;
 
 const forward = { x: 0, z: 0 };
 
@@ -42,8 +45,9 @@ export class FlightController {
     const currentForward = state.velocity.x * forward.x + state.velocity.z * forward.z;
     const currentLateral = state.velocity.x * rightX + state.velocity.z * rightZ;
     // Position hold counters most wind drift while hovering; wind bites harder in forward flight.
+    const stickInput = Math.max(Math.abs(axes.throttle), Math.abs(axes.strafe));
     const windExposure =
-      c.windInfluence * (HOVER_WIND_FRACTION + (1 - HOVER_WIND_FRACTION) * Math.abs(axes.throttle));
+      c.windInfluence * (HOVER_WIND_FRACTION + (1 - HOVER_WIND_FRACTION) * stickInput);
     const windForward = (env.wind.x * forward.x + env.wind.z * forward.z) * windExposure;
     const windLateral = (env.wind.x * rightX + env.wind.z * rightZ) * windExposure;
 
@@ -55,13 +59,26 @@ export class FlightController {
       Math.sign(targetForward) === Math.sign(currentForward || targetForward);
     const forwardRate = accelerating ? c.acceleration : c.deceleration;
     const nextForward = moveTowards(currentForward, targetForward, forwardRate * dt);
-    const nextLateral = moveTowards(currentLateral, windLateral, c.deceleration * dt);
+
+    // Roll input slides the drone sideways without turning the nose.
+    const targetLateral = axes.strafe * c.strafeSpeed + windLateral;
+    const lateralAccelerating =
+      Math.abs(targetLateral) > Math.abs(currentLateral) &&
+      Math.sign(targetLateral) === Math.sign(currentLateral || targetLateral);
+    const lateralRate = lateralAccelerating ? c.acceleration : c.deceleration;
+    const nextLateral = moveTowards(currentLateral, targetLateral, lateralRate * dt);
 
     // Yaw with a little inertia.
     state.yawRate = damp(state.yawRate, axes.steer * c.yawRate, c.yawResponse, dt);
 
     // Vertical: climb/descend with ceiling and landing assist.
-    let targetVertical = axes.lift * c.verticalSpeed;
+    // Rain downdraft and turbulence push the drone vertically; altitude hold only partly cancels it.
+    const liftInput = Math.abs(axes.lift);
+    const verticalGust =
+      (env.wind.y ?? 0) *
+      c.windInfluence *
+      (HOVER_WIND_FRACTION + (1 - HOVER_WIND_FRACTION) * liftInput);
+    let targetVertical = axes.lift * c.verticalSpeed + verticalGust;
     if (state.altitudeAGL > c.maxAltitudeAGL || state.position.y > env.serviceCeiling) {
       targetVertical = Math.min(targetVertical, -1);
     }
@@ -77,17 +94,26 @@ export class FlightController {
     out.yawRate = state.yawRate;
     out.gravityScale = 0;
 
-    // Visual attitude: nose down with speed and acceleration, bank into turns.
+    // Visual attitude: like a real multirotor, the body tilts towards where it is going.
+    // Pitch follows forward speed/acceleration, roll follows sideways speed/acceleration and
+    // turns, and climbing or descending adds a slight nose-up / nose-down cue.
+    const pitchLimit = c.pitchAngleDeg * DEG2RAD;
+    const bankLimit = c.bankAngleDeg * DEG2RAD;
     const accel = (nextForward - currentForward) / Math.max(dt, 1e-4);
+    const lateralAccel = (nextLateral - currentLateral) / Math.max(dt, 1e-4);
     const speedRatio = clamp(nextForward / c.maxSpeed, -1, 1);
+    const lateralRatio = clamp(nextLateral / c.strafeSpeed, -1, 1);
+    const climbRatio = clamp(nextVertical / c.verticalSpeed, -1, 1);
     const targetPitch = clamp(
-      -speedRatio * c.pitchAngleDeg * DEG2RAD - accel * ACCEL_TILT_GAIN,
-      -c.pitchAngleDeg * DEG2RAD * 1.4,
-      c.pitchAngleDeg * DEG2RAD,
+      -speedRatio * pitchLimit - accel * ACCEL_TILT_GAIN + climbRatio * c.climbTiltDeg * DEG2RAD,
+      -pitchLimit * 1.3,
+      pitchLimit * 1.1,
     );
-    const turnBank = (state.yawRate / c.yawRate) * (0.35 + 0.65 * Math.abs(speedRatio));
-    const lateralBank = nextLateral / c.maxSpeed;
-    const targetRoll = -clamp(turnBank + lateralBank, -1, 1) * c.bankAngleDeg * DEG2RAD;
+    const turnBank = (state.yawRate / c.yawRate) * (0.25 + 0.5 * Math.abs(speedRatio));
+    // Deliberate slides bank fully; incidental drift (e.g. while turning) only slightly.
+    const slideWeight = axes.strafe !== 0 ? 1 : DRIFT_BANK_WEIGHT;
+    const slideBank = (lateralRatio + lateralAccel * ACCEL_TILT_GAIN * 0.5) * slideWeight;
+    const targetRoll = -clamp(turnBank * 0.6 + slideBank, -1.2, 1.2) * bankLimit;
     state.visualPitch = damp(state.visualPitch, targetPitch, VISUAL_TILT_RESPONSE, dt);
     state.visualRoll = damp(state.visualRoll, targetRoll, VISUAL_TILT_RESPONSE, dt);
     state.hovering = Math.hypot(out.x, out.z) < c.hoverSpeedThreshold;

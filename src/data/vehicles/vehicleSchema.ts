@@ -64,6 +64,8 @@ export const vehicleConfigSchema = z.object({
   flight: z.object({
     maxSpeed: z.number().positive(),
     reverseSpeed: z.number().positive(),
+    /** Sideways (roll) speed. */
+    strafeSpeed: z.number().positive(),
     acceleration: z.number().positive(),
     deceleration: z.number().positive(),
     verticalSpeed: z.number().positive(),
@@ -74,22 +76,62 @@ export const vehicleConfigSchema = z.object({
     serviceCeiling: z.number().positive(),
     bankAngleDeg: z.number().min(0).max(45),
     pitchAngleDeg: z.number().min(0).max(45),
+    /** Nose-up/down tilt added at full climb/descent rate (visual only). */
+    climbTiltDeg: z.number().min(0).max(20),
     hoverBob: z.number().min(0),
     windInfluence: z.number().min(0),
     groundEffectHeight: z.number().positive(),
     hoverSpeedThreshold: z.number().positive(),
   }),
+  /** Ground vehicle: raycast suspension on four wheels with load-dependent tyre grip. */
   rover: z.object({
     maxSpeed: z.number().positive(),
     reverseSpeed: z.number().positive(),
-    acceleration: z.number().positive(),
-    brakeDeceleration: z.number().positive(),
-    coastDeceleration: z.number().positive(),
-    steerRate: z.number().positive(),
-    steerSpeedReference: z.number().positive(),
-    maxClimbSlopeDeg: z.number().positive(),
-    lateralGrip: z.number().positive(),
-    rideHeight: z.number(),
+    /** Total drive force at standstill (N), shared by the four driven wheels. */
+    engineForce: z.number().positive(),
+    /** Total braking force (N). */
+    brakeForce: z.number().positive(),
+    /** Road-wheel steering lock (degrees) at low speed; reduced at speed. */
+    maxSteerDeg: z.number().positive(),
+    /** How fast the steering reaches its target angle (1/s). */
+    steerResponse: z.number().positive(),
+    /** Base tyre friction coefficient (multiplied by the surface traction). */
+    tireGrip: z.number().positive(),
+    /** Fraction of a wheel's sideways slip cancelled per physics step before the grip limit. */
+    lateralStiffness: z.number().min(0).max(1),
+    wheel: z.object({
+      radius: z.number().positive(),
+      /** Half the distance between left and right wheels. */
+      trackHalf: z.number().positive(),
+      /** Distance from the centre to the front/rear axle. */
+      axleOffset: z.number().positive(),
+      /** Height of the suspension mount above the body origin. */
+      mountHeight: z.number().positive(),
+    }),
+    suspension: z.object({
+      /** Spring length from mount to wheel centre at full extension (m). */
+      restLength: z.number().positive(),
+      /** N/m per wheel. */
+      stiffness: z.number().positive(),
+      /** N·s/m per wheel. */
+      damping: z.number().positive(),
+      /** Extra stiffness multiplier on the last 15% of travel. */
+      bumpStop: z.number().min(1),
+      /** Anti-roll bar stiffness (N/m of left/right compression difference). */
+      antiRoll: z.number().min(0),
+    }),
+    mass: z.object({
+      total: z.number().positive(),
+      /** Centre of mass above the body origin (low = hard to roll). */
+      centerHeight: z.number(),
+      /** Principal moments of inertia (kg·m²). */
+      inertia: z.tuple([z.number().positive(), z.number().positive(), z.number().positive()]),
+      angularDamping: z.number().min(0),
+    }),
+    /** Seconds on its side/roof before TerraWing rights itself with a rotor burst. */
+    selfRightDelay: z.number().positive(),
+    /** Drag in deep water (N per m/s). */
+    waterDrag: z.number().min(0),
   }),
   transform: z.object({
     maxAltitudeAGL: z.number().positive(),

@@ -80,15 +80,15 @@ describe('InputManager', () => {
     input.attach();
     const down = (code: string) => window.dispatchEvent(new KeyboardEvent('keydown', { code }));
     const up = (code: string) => window.dispatchEvent(new KeyboardEvent('keyup', { code }));
-    const axes = { throttle: 0, steer: 0, lift: 0, brake: false };
+    const axes = { throttle: 0, steer: 0, lift: 0, strafe: 0, brake: false };
 
     down('KeyW');
-    expect(input.sampleAxes(axes).throttle).toBe(1);
+    expect(input.sampleAxes(axes, 'ROVER').throttle).toBe(1);
     up('KeyW');
 
     input.setBindings({ ...DEFAULT_KEY_BINDINGS, forward: ['KeyI'] });
     down('KeyI');
-    expect(input.sampleAxes(axes).throttle).toBe(1);
+    expect(input.sampleAxes(axes, 'ROVER').throttle).toBe(1);
     up('KeyI');
 
     down('KeyQ');
@@ -97,7 +97,31 @@ describe('InputManager', () => {
 
     input.setEnabled(false);
     down('KeyI');
-    expect(input.sampleAxes(axes).throttle).toBe(0);
+    expect(input.sampleAxes(axes, 'ROVER').throttle).toBe(0);
+    input.detach();
+  });
+
+  it('uses the drone Mode 2 layout in flight', () => {
+    const input = new InputManager();
+    input.attach();
+    const down = (code: string) => window.dispatchEvent(new KeyboardEvent('keydown', { code }));
+    const up = (code: string) => window.dispatchEvent(new KeyboardEvent('keyup', { code }));
+    const axes = { throttle: 0, steer: 0, lift: 0, strafe: 0, brake: false };
+
+    down('KeyW');
+    down('ArrowUp');
+    down('ArrowLeft');
+    down('KeyD');
+    const flight = input.sampleAxes(axes, 'FLIGHT');
+    expect(flight).toMatchObject({ lift: 1, throttle: 1, strafe: -1, steer: 1 });
+    up('KeyW');
+    up('ArrowUp');
+    up('ArrowLeft');
+    up('KeyD');
+
+    down('Numpad6');
+    down('KeyS');
+    expect(input.sampleAxes(axes, 'FLIGHT')).toMatchObject({ strafe: 1, lift: -1, throttle: 0 });
     input.detach();
   });
 });

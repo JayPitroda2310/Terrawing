@@ -3,7 +3,14 @@ import { SurfaceId } from '@/data/surfaces/surfaces';
 import type { TransformDirection, VehicleMode } from '@/game/core/GameState';
 import type { TerrainQuery } from '@/game/environment/TerrainQuery';
 import type { ControlAxes } from '@/game/input/InputManager';
-import { createBodySample, type GroundHit, type VehicleBody } from '@/game/physics/VehicleBody';
+import {
+  createBodySample,
+  type BodyMode,
+  type GroundHit,
+  type Quat,
+  type VehicleBody,
+} from '@/game/physics/VehicleBody';
+import { headingToQuaternion, slerp } from '@/utils/math/quat';
 import { FlightController, type FlightEnvironment } from './FlightController';
 import { RoverController, type RoverEnvironment } from './RoverController';
 import { TransformationController, type TransformStepResult } from './TransformationController';
@@ -25,6 +32,16 @@ const WATER_DEPTH_THRESHOLD = 0.35;
  * the vehicle may not land there.
  */
 const LANDING_OBSTRUCTION_LIMIT = 1.5;
+/** Rate at which the chassis levels itself when switching from wheels to rotors (1/s). */
+const UPRIGHT_RATE = 5;
+/** Suspension bottoming (m/s of compression) is converted to an impact speed by this factor. */
+const BOTTOM_OUT_IMPACT = 2.2;
+/** Boundary push strength in rover mode (the value is a velocity; this makes it a force). */
+const ROVER_PUSH_GAIN = 3;
+/** Impacts may exceed the previous speed by this factor (rebound). */
+const IMPACT_SPEED_MARGIN = 1.15;
+
+const BRAKE_AXES: ControlAxes = { throttle: 0, steer: 0, lift: 0, strafe: 0, brake: true };
 
 export type ControlMode = 'flight' | 'rover' | 'transform' | 'hold';
 
@@ -38,8 +55,14 @@ export class TerraWingController {
   readonly rover: RoverController;
   readonly transformation: TransformationController;
   readonly command: VelocityCommand = createVelocityCommand();
-  private readonly lastCommand: VelocityCommand = createVelocityCommand();
-  private hasLastCommand = false;
+  /** Velocity the body should have next step if nothing but our own forces act on it. */
+  private readonly expected = { x: 0, y: 0, z: 0 };
+  private hasExpected = false;
+  private pendingBottomOut = 0;
+  /** Speed at the previous step; a collision cannot change velocity by much more than this. */
+  private previousSpeed = 0;
+  private bodyMode: BodyMode = 'flight';
+  private readonly rotation: Quat = { x: 0, y: 0, z: 0, w: 1 };
   private readonly sample = createBodySample();
   private readonly hit: GroundHit = { distance: 0, normal: { x: 0, y: 1, z: 0 } };
   private body: VehicleBody | null = null;
@@ -67,7 +90,23 @@ export class TerraWingController {
 
   attach(body: VehicleBody): void {
     this.body = body;
-    this.hasLastCommand = false;
+    this.hasExpected = false;
+    this.bodyMode = this.state.mode === 'ROVER' ? 'rover' : 'flight';
+    body.setMode(this.bodyMode);
+    this.rover.reset();
+  }
+
+  /** Which physics model is active: rotor flight or wheeled rover. */
+  get physicsMode(): BodyMode {
+    return this.bodyMode;
+  }
+
+  private setBodyMode(mode: BodyMode): void {
+    if (!this.body || mode === this.bodyMode) return;
+    this.bodyMode = mode;
+    this.body.setMode(mode);
+    this.rover.reset();
+    this.hasExpected = false;
   }
 
   detach(): void {
@@ -131,34 +170,80 @@ export class TerraWingController {
     s.steer = axes.steer;
     s.lift = axes.lift;
     let result: TransformStepResult | null = null;
+
+    if (control === 'transform') {
+      result = this.transformation.update(s, dt, this.command);
+      // Leaving the ground: rotors take over from the suspension once the chassis starts rising.
+      if (result.type === 'phase' && this.transformation.currentDirection === 'toFlight') {
+        this.setBodyMode('flight');
+      }
+    }
+
+    if (this.bodyMode === 'rover') {
+      // On wheels everything is force-based; cinematics and transformations simply hold the brakes.
+      const roverAxes = control === 'rover' ? axes : BRAKE_AXES;
+      const step = this.rover.update(s, roverAxes, roverEnv, dt, this.body!);
+      const m = this.body!.mass;
+      this.expected.x = s.velocity.x + step.impulse.x / m;
+      this.expected.y = s.velocity.y + step.impulse.y / m - GRAVITY * dt;
+      this.expected.z = s.velocity.z + step.impulse.z / m;
+      this.hasExpected = true;
+      this.pendingBottomOut = step.bottomOut;
+      s.yawRate = 0;
+      return result;
+    }
+
     switch (control) {
       case 'flight':
         this.flight.update(s, axes, flightEnv, dt, this.command);
         break;
       case 'rover':
-        this.rover.update(s, axes, roverEnv, dt, this.command);
+        // Wheels not yet down (mid-transformation): hold position.
+        this.hold(dt);
         break;
       case 'transform':
-        result = this.transformation.update(s, dt, this.command);
         break;
       case 'hold':
         this.hold(dt);
         break;
     }
+    this.levelChassis(dt);
     return result;
+  }
+
+  /** In rotor flight the body is kept upright; after leaving the ground it levels smoothly. */
+  private levelChassis(dt: number): void {
+    if (!this.body) return;
+    const q = this.body.rotation(this.rotation);
+    if (Math.abs(q.x) < 1e-4 && Math.abs(q.z) < 1e-4) return;
+    const upright = headingToQuaternion(this.state.heading);
+    this.body.setRotation(slerp(q, upright, 1 - Math.exp(-UPRIGHT_RATE * dt), q));
   }
 
   /** Writes the current command to the physics body. Extra velocity (e.g. boundary push) is added. */
   apply(extraX = 0, extraZ = 0): void {
     if (!this.body) return;
+    if (this.bodyMode === 'rover') {
+      if (extraX !== 0 || extraZ !== 0) {
+        const m = this.body.mass;
+        const impulse = {
+          x: (extraX * m * ROVER_PUSH_GAIN) / 60,
+          y: 0,
+          z: (extraZ * m * ROVER_PUSH_GAIN) / 60,
+        };
+        this.body.applyImpulse(impulse);
+        this.expected.x += impulse.x / m;
+        this.expected.z += impulse.z / m;
+      }
+      return;
+    }
     this.command.x += extraX;
     this.command.z += extraZ;
     this.body.write(this.command);
-    this.lastCommand.x = this.command.x;
-    this.lastCommand.y = this.command.y;
-    this.lastCommand.z = this.command.z;
-    this.lastCommand.gravityScale = this.command.gravityScale;
-    this.hasLastCommand = true;
+    this.expected.x = this.command.x;
+    this.expected.y = this.command.y - GRAVITY * this.command.gravityScale * (1 / 60);
+    this.expected.z = this.command.z;
+    this.hasExpected = true;
   }
 
   requestTransform(direction: TransformDirection): string | null {
@@ -179,6 +264,7 @@ export class TerraWingController {
   finishTransform(direction: TransformDirection): VehicleMode {
     const mode: VehicleMode = direction === 'toRover' ? 'ROVER' : 'FLIGHT';
     this.state.mode = mode;
+    if (mode === 'ROVER') this.setBodyMode('rover');
     Object.assign(
       this.state.rig,
       mode === 'ROVER' ? this.config.rig.rover : this.config.rig.flight,
@@ -192,7 +278,8 @@ export class TerraWingController {
     this.state.position.x = x;
     this.state.position.y = y;
     this.state.position.z = z;
-    this.hasLastCommand = false;
+    this.hasExpected = false;
+    this.rover.reset();
   }
 
   /** Keeps the vehicle stationary (cinematics, interactions): hovering in flight, braking on wheels. */
@@ -219,11 +306,26 @@ export class TerraWingController {
     return Math.acos(Math.min(1, n.y));
   }
 
-  /** Difference between the velocity we asked for and what physics delivered = collision. */
-  private measureImpact(dt: number): number {
-    if (!this.hasLastCommand) return 0;
+  /**
+   * Collision detection: the difference between the velocity our own forces should have produced
+   * and what physics delivered is an external impact (rock, wall, hard landing). Suspension
+   * bottoming out also counts.
+   */
+  private measureImpact(_dt: number): number {
+    const bottomOut = this.pendingBottomOut * BOTTOM_OUT_IMPACT;
+    this.pendingBottomOut = 0;
+    if (!this.hasExpected) {
+      const v = this.state.velocity;
+      this.previousSpeed = Math.hypot(v.x, v.y, v.z);
+      return bottomOut;
+    }
     const v = this.state.velocity;
-    const expectedY = this.lastCommand.y - GRAVITY * this.lastCommand.gravityScale * dt;
-    return Math.hypot(v.x - this.lastCommand.x, v.y - expectedY, v.z - this.lastCommand.z);
+    const e = this.expected;
+    const deviation = Math.hypot(v.x - e.x, v.y - e.y, v.z - e.z);
+    // Solver position corrections (e.g. the chassis sinking into a boulder) can spike velocity;
+    // a real impact is bounded by the closing speed, so cap it there.
+    const plausible = Math.min(deviation, this.previousSpeed * IMPACT_SPEED_MARGIN + 1);
+    this.previousSpeed = Math.hypot(v.x, v.y, v.z);
+    return Math.max(bottomOut, plausible);
   }
 }
