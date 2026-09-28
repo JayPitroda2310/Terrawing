@@ -11,6 +11,9 @@ interface GameStoreState {
   selectedMissionId: string;
   /** The live mission session. Treated as an opaque reference — never mutated through React. */
   session: GameSession | null;
+  /** The 3D menu backdrop has loaded and rendered (the site-load loader can go). */
+  backdropReady: boolean;
+  setBackdropReady(ready: boolean): void;
   lastResult: MissionResult | null;
   /** Fatal errors (invalid mission data, WebGL unavailable). */
   fatalError: string | null;
@@ -35,6 +38,8 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   settingsReturn: Screen.MAIN_MENU,
   selectedMissionId: 'mission-01',
   session: null,
+  backdropReady: false,
+  setBackdropReady: (backdropReady) => set({ backdropReady }),
   lastResult: null,
   fatalError: null,
   debugOpen: false,

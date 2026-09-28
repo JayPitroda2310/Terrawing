@@ -19,6 +19,7 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { RenderStatsProbe } from '@/ui/debug/RenderStatsProbe';
 import { MENU_FOCUS } from './menuConfig';
 import { MenuScene } from './MenuScene';
+import { BackdropReady } from './BackdropReady';
 import { MissionScene } from './MissionScene';
 
 const PHYSICS_STEP = 1 / 60;
@@ -137,6 +138,7 @@ export function GameCanvas() {
       }}
       className="!absolute inset-0"
     >
+      <BackdropReady />
       <PerformanceMonitor
         onDecline={() =>
           setDpr({

@@ -6,6 +6,7 @@ import type { MissionDefinition } from '@/game/missions/MissionDefinition';
 import { narrator } from '@/services/audio/narrator';
 import { useGameStore } from '@/store/gameStore';
 import { useSettingsStore } from '@/store/settingsStore';
+import { WordmarkLoader } from '@/ui/common/WordmarkLoader';
 import { formatTime } from '@/utils/helpers/format';
 
 interface Beat {
@@ -66,6 +67,13 @@ export function MissionBriefing() {
   }, [missionId]);
   const story = useMemo(() => (mission ? buildStory(mission) : []), [mission]);
   const [index, setIndex] = useState(0);
+  // Narration (briefing + radio calls) downloads first, behind the loader, so the story plays
+  // without gaps.
+  const [voiceLoad, setVoiceLoad] = useState<{ id: string; progress: number; ready: boolean }>({
+    id: '',
+    progress: 0,
+    ready: false,
+  });
   const timer = useRef<number | null>(null);
   const voice = settings.voiceNarration;
   const finished = index >= story.length;
@@ -74,7 +82,25 @@ export function MissionBriefing() {
   // Title card, then the whole briefing as one continuous radio call; caption cards follow the
   // voice. Without narration, cards advance on a reading timer instead.
   const playing = useRef(false);
+  const ready = !voice || (voiceLoad.id === missionId && voiceLoad.ready);
   useEffect(() => {
+    if (!voice) return;
+    let cancelled = false;
+    setVoiceLoad({ id: missionId, progress: 0, ready: false });
+    void narrator
+      .preload(narrator.missionClips(missionId), (progress) => {
+        if (!cancelled) setVoiceLoad((s) => ({ ...s, id: missionId, progress }));
+      })
+      .then(() => {
+        if (!cancelled) setVoiceLoad({ id: missionId, progress: 1, ready: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [missionId, voice]);
+
+  useEffect(() => {
+    if (!ready) return;
     if (timer.current) window.clearTimeout(timer.current);
     const beat = story[index];
     if (!beat) {
@@ -110,13 +136,14 @@ export function MissionBriefing() {
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
     };
-  }, [index, story, voice, next, mission, settings.masterVolume]);
+  }, [index, story, voice, next, mission, settings.masterVolume, ready]);
 
   useEffect(() => () => narrator.cancel(), []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.code !== 'Enter' && event.code !== 'Space') return;
+      if (!ready) return;
       event.preventDefault();
       narrator.cancel();
       if (finished) manager.beginMission();
@@ -124,9 +151,10 @@ export function MissionBriefing() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [finished, manager, next, story.length]);
+  }, [finished, manager, next, story.length, ready]);
 
   if (!mission) return null;
+  if (!ready) return <WordmarkLoader percent={voiceLoad.progress * 100} />;
   const b = mission.briefing;
   const beat = story[Math.min(index, story.length - 1)]!;
   const facts: [string, string][] = [

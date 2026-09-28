@@ -9,6 +9,8 @@ import { ControlsIntro } from '@/ui/hud/ControlsIntro';
 import { HUD } from '@/ui/hud/HUD';
 import { detectWebGL } from '@/utils/performance/webgl';
 import { GameManagerContext } from './GameManagerContext';
+import { useProgress } from '@react-three/drei';
+import { WordmarkLoader } from '@/ui/common/WordmarkLoader';
 import { DebugPanel, SCREEN_ROUTES } from './routes';
 
 const MIN_WIDTH = 1280;
@@ -62,6 +64,8 @@ function GameShell() {
   const debugOpen = useGameStore((s) => s.debugOpen);
   const setFatalError = useGameStore((s) => s.setFatalError);
   const Overlay = SCREEN_ROUTES[screen];
+  const backdropReady = useGameStore((s) => s.backdropReady);
+  const loadProgress = useProgress((s) => s.progress);
   const showHud = session && isMissionScreen(screen) && screen !== Screen.LOADING;
 
   return (
@@ -75,6 +79,7 @@ function GameShell() {
           <DebugPanel />
         </Suspense>
       )}
+      {!backdropReady && <WordmarkLoader percent={loadProgress} />}
       {fatalError && (
         <FatalScreen
           title="Mission data error"
