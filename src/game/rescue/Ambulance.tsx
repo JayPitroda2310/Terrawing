@@ -7,6 +7,10 @@ import {
   CanvasTexture,
   DoubleSide,
   BufferAttribute,
+  Vector2,
+  RepeatWrapping,
+  CylinderGeometry,
+  LatheGeometry,
   BufferGeometry,
   ExtrudeGeometry,
   Material,
@@ -231,8 +235,26 @@ function useAmbulanceMaterials() {
       plastic: new MeshStandardMaterial({ color: '#1d2023', roughness: 0.75 }),
       chassis: new MeshStandardMaterial({ color: '#15171a', roughness: 0.85 }),
       chrome: new MeshStandardMaterial({ color: '#d0d4d8', roughness: 0.18, metalness: 1 }),
-      tyre: new MeshStandardMaterial({ color: '#151515', roughness: 0.92 }),
-      rim: new MeshStandardMaterial({ color: '#b7bcc0', roughness: 0.35, metalness: 0.8 }),
+      tyre: new MeshStandardMaterial({
+        color: '#1c1d1e',
+        roughness: 0.86,
+        bumpMap: createVanTyreTexture(),
+        bumpScale: 2.2,
+      }),
+      rim: new MeshPhysicalMaterial({
+        color: '#c3c8cc',
+        roughness: 0.28,
+        metalness: 0.9,
+        clearcoat: 0.6,
+      }),
+      rimInner: new MeshStandardMaterial({
+        color: '#5a6066',
+        roughness: 0.5,
+        metalness: 0.7,
+        side: DoubleSide,
+      }),
+      brake: new MeshStandardMaterial({ color: '#6e7275', roughness: 0.45, metalness: 0.85 }),
+      liner: new MeshStandardMaterial({ color: '#121314', roughness: 0.95, side: BackSide }),
       glass: new MeshPhysicalMaterial({
         color: '#0d1316',
         roughness: 0.04,
@@ -271,8 +293,8 @@ function useAmbulanceMaterials() {
       ['rear', 0.45],
       ['plastic', 0.55],
       ['chassis', 0.8],
-      ['tyre', 0.7],
-      ['rim', 0.5],
+      ['tyre', 0.3],
+      ['rim', 0.2],
     ] as const)
       applyWear(materials[name], wear, { mud, grain: 0.8, variation: 0.05 });
     return { ...materials, wear };
@@ -430,29 +452,210 @@ function splitWindowReveals(source: ExtrudeGeometry): BufferGeometry {
   return out;
 }
 
-function Wheel({ materials, dual }: { materials: Materials; dual?: boolean }) {
-  const width = dual ? 0.46 : 0.24;
+/** Van wheel dimensions (m): 235/65 R16C tyre on a 16" six-spoke alloy. */
+const TYRE_WIDTH = 0.235;
+const RIM_RADIUS = 0.205;
+
+/** Tyre profile (radius, axial y) for the lathe: rim bead, bulging sidewall, rounded shoulder. */
+function tyreProfile(): [number, number][] {
+  const h = TYRE_WIDTH / 2;
+  const R = WHEEL_RADIUS;
+  const r = RIM_RADIUS;
+  return [
+    [r + 0.004, -h + 0.022],
+    [r + 0.028, -h + 0.002],
+    [R - 0.1, -h - 0.009],
+    [R - 0.035, -h + 0.004],
+    [R - 0.007, -h + 0.034],
+    [R, -h + 0.062],
+    [R, h - 0.062],
+    [R - 0.007, h - 0.034],
+    [R - 0.035, h - 0.004],
+    [R - 0.1, h + 0.009],
+    [r + 0.028, h - 0.002],
+    [r + 0.004, h - 0.022],
+  ];
+}
+
+/**
+ * Tyre height map on the lathe UVs (u around, v across the profile): a road/all-season tread on
+ * the crown — four circumferential grooves and angled sipes — and moulded lettering on both
+ * sidewalls.
+ */
+function createVanTyreTexture(): CanvasTexture {
+  const w = 2048;
+  const h = 256;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#9a9a9a';
+  ctx.fillRect(0, 0, w, h);
+  const points = 12;
+  const vy = (v: number) => (1 - v) * h;
+  // Crown spans profile points 5..6 (and a little of the shoulders either side).
+  const crownTop = vy(4.4 / (points - 1));
+  const crownBottom = vy(6.6 / (points - 1));
+  const crownH = crownBottom - crownTop;
+  // Tread blocks: angled sipes between four grooves.
+  ctx.fillStyle = '#5a5a5a';
+  for (let i = 0; i < 180; i++) {
+    const x = (i / 180) * w;
+    ctx.save();
+    ctx.translate(x, crownTop);
+    ctx.transform(1, 0, -0.35, 1, 0, 0);
+    ctx.fillRect(0, 0, 3, crownH);
+    ctx.restore();
+  }
+  ctx.fillStyle = '#202020';
+  for (const f of [0.18, 0.4, 0.6, 0.82]) ctx.fillRect(0, crownTop + crownH * f - 3, w, 6);
+  // Sidewall lettering (raised).
+  ctx.fillStyle = '#e6e6e6';
+  ctx.font = 'bold 22px "Arial Black", Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const [v, flip] of [
+    [1.6 / (points - 1), false],
+    [9.4 / (points - 1), true],
+  ] as const) {
+    for (const [k, text] of ['ALL SEASON VAN  C', '235/65 R16C  115/113R'].entries()) {
+      for (let r = 0; r < 2; r++) {
+        ctx.save();
+        ctx.translate(((k * 0.5 + r) / 2 + 0.1) * w, vy(v));
+        if (flip) ctx.scale(-1, -1);
+        ctx.fillText(text, 0, 0);
+        ctx.restore();
+      }
+    }
+  }
+  const texture = new CanvasTexture(c);
+  texture.wrapS = RepeatWrapping;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+/** Shared wheel geometry for all ambulance wheels. */
+function useWheelParts() {
+  return useMemo(() => {
+    const tyre = new LatheGeometry(
+      tyreProfile().map(([r, y]) => new Vector2(r, y)),
+      56,
+    );
+    const h = TYRE_WIDTH / 2;
+    // Rim barrel (seen through the spokes) and the outer lip.
+    const barrel = new CylinderGeometry(
+      RIM_RADIUS - 0.004,
+      RIM_RADIUS - 0.004,
+      TYRE_WIDTH - 0.03,
+      40,
+      1,
+      true,
+    );
+    const lip = new LatheGeometry(
+      [
+        [RIM_RADIUS + 0.014, h - 0.012],
+        [RIM_RADIUS + 0.01, h + 0.004],
+        [RIM_RADIUS - 0.006, h + 0.006],
+        [RIM_RADIUS - 0.022, h - 0.004],
+        [RIM_RADIUS - 0.03, h - 0.018],
+      ].map(([r, y]) => new Vector2(r!, y!)),
+      48,
+    );
+    // Hub: domed centre with the lug-nut face.
+    const hub = new LatheGeometry(
+      [
+        [0.001, h - 0.008],
+        [0.03, h - 0.009],
+        [0.058, h - 0.014],
+        [0.075, h - 0.026],
+        [0.078, h - 0.05],
+      ].map(([r, y]) => new Vector2(r!, y!)),
+      32,
+    );
+    // Spoke: tapered, dished blade from the hub to the lip.
+    const spokeShape = new Shape();
+    spokeShape.moveTo(0.07, -0.024);
+    spokeShape.lineTo(RIM_RADIUS - 0.02, -0.017);
+    spokeShape.lineTo(RIM_RADIUS - 0.02, 0.017);
+    spokeShape.lineTo(0.07, 0.024);
+    spokeShape.lineTo(0.07, -0.024);
+    const spoke = new ExtrudeGeometry(spokeShape, {
+      depth: 0.018,
+      bevelEnabled: true,
+      bevelThickness: 0.004,
+      bevelSize: 0.004,
+      bevelSegments: 2,
+    });
+    // Lay it in the wheel face plane (XZ), dished back toward the rim.
+    spoke.rotateX(-Math.PI / 2);
+    const position = spoke.getAttribute('position') as BufferAttribute;
+    for (let i = 0; i < position.count; i++) {
+      const r = Math.hypot(position.getX(i), position.getZ(i));
+      position.setY(i, position.getY(i) + h - 0.022 - (r - 0.07) * 0.1);
+    }
+    spoke.computeVertexNormals();
+    const disc = new CylinderGeometry(0.165, 0.165, 0.022, 36);
+    return { tyre, barrel, lip, hub, spoke, disc, h };
+  }, []);
+}
+
+type WheelParts = ReturnType<typeof useWheelParts>;
+
+/** One road wheel: tyre, six-spoke alloy (open between the spokes), brake disc behind. */
+function RoadWheel({ m, parts }: { m: Materials; parts: WheelParts }) {
+  const { h } = parts;
   return (
-    <group rotation={[0, 0, Math.PI / 2]}>
-      <mesh material={materials.tyre} castShadow>
-        <cylinderGeometry args={[WHEEL_RADIUS, WHEEL_RADIUS, width, 28]} />
-      </mesh>
-      <mesh material={materials.rim} position={[0, width / 2 + 0.005, 0]}>
-        <cylinderGeometry args={[0.22, 0.24, 0.03, 20]} />
-      </mesh>
-      {Array.from({ length: 6 }, (_, i) => (
+    <group>
+      <mesh geometry={parts.tyre} material={m.tyre} castShadow receiveShadow />
+      <mesh geometry={parts.barrel} material={m.rimInner} />
+      <mesh geometry={parts.lip} material={m.rim} />
+      {Array.from({ length: 6 }, (_, k) => (
         <mesh
-          key={i}
-          material={materials.plastic}
-          position={[
-            Math.cos((i / 6) * Math.PI * 2) * 0.13,
-            width / 2 + 0.024,
-            Math.sin((i / 6) * Math.PI * 2) * 0.13,
-          ]}
-        >
-          <cylinderGeometry args={[0.018, 0.018, 0.02, 6]} />
-        </mesh>
+          key={k}
+          geometry={parts.spoke}
+          material={m.rim}
+          rotation={[0, (k / 6) * Math.PI * 2, 0]}
+        />
       ))}
+      <mesh geometry={parts.hub} material={m.rim} />
+      {Array.from({ length: 6 }, (_, k) => {
+        const a = (k / 6) * Math.PI * 2 + Math.PI / 6;
+        return (
+          <mesh
+            key={`nut${k}`}
+            material={m.chrome}
+            position={[Math.cos(a) * 0.05, h - 0.004, Math.sin(a) * 0.05]}
+          >
+            <cylinderGeometry args={[0.0085, 0.0085, 0.014, 6]} />
+          </mesh>
+        );
+      })}
+      <mesh material={m.plastic} position={[0, h - 0.002, 0]}>
+        <cylinderGeometry args={[0.024, 0.024, 0.008, 20]} />
+      </mesh>
+      <mesh geometry={parts.disc} material={m.brake} position={[0, h - 0.085, 0]} />
+    </group>
+  );
+}
+
+/** A wheel station: single front wheel, or a dual rear pair (outer and inner tyre). */
+function Wheel({ m, parts, dual }: { m: Materials; parts: WheelParts; dual?: boolean }) {
+  return (
+    // Wheel face (+Y) turned to point outboard (+X; the left side is mirrored by the caller).
+    <group rotation={[0, 0, -Math.PI / 2]}>
+      {dual ? (
+        <>
+          <group position={[0, TYRE_WIDTH / 2 + 0.005, 0]}>
+            <RoadWheel m={m} parts={parts} />
+          </group>
+          <group position={[0, -TYRE_WIDTH / 2 - 0.005, 0]} rotation={[Math.PI, 0, 0]}>
+            <mesh geometry={parts.tyre} material={m.tyre} castShadow />
+            <mesh geometry={parts.barrel} material={m.rimInner} />
+          </group>
+        </>
+      ) : (
+        <RoadWheel m={m} parts={parts} />
+      )}
     </group>
   );
 }
@@ -474,6 +677,7 @@ export function Ambulance({
 }) {
   const m = useAmbulanceMaterials();
   const cab = useCabGeometry();
+  const wheelParts = useWheelParts();
   const cabMaterials = useMemo<Material[]>(() => [m.cab, m.body, m.cabin], [m]);
   const passenger = useRef<Group>(null);
   const body = useRef<RapierRigidBody>(null);
@@ -495,9 +699,10 @@ export function Ambulance({
       for (const material of Object.values(m)) if (material instanceof Material) material.dispose();
       cab.geometry.dispose();
       for (const pane of cab.windows) pane.dispose();
+      for (const part of Object.values(wheelParts)) if (typeof part !== 'number') part.dispose();
       cab.skirt.dispose();
     },
-    [m, cab],
+    [m, cab, wheelParts],
   );
 
   useFrame(({ clock }, rawDt) => {
@@ -668,6 +873,24 @@ export function Ambulance({
             <boxGeometry args={[0.62, 0.018, 0.02]} />
           </mesh>
         ))}
+        {/* Wheel-arch liners: dark wells round every wheel. */}
+        {sides.flatMap((sx) =>
+          (
+            [
+              [FRONT_AXLE, 0.44, 0.47, 0.36, 0.82],
+              [REAR_AXLE, WHEEL_RADIUS, WHEEL_RADIUS + 0.115, 0.56, 0.9],
+            ] as const
+          ).map(([z, y, radius, width, x]) => (
+            <mesh
+              key={`liner${sx}${z}`}
+              material={m.liner}
+              position={[sx * x, y, z]}
+              rotation={[0, 0, Math.PI / 2]}
+            >
+              <cylinderGeometry args={[radius, radius, width, 32, 1, true, 0, Math.PI]} />
+            </mesh>
+          )),
+        )}
         {/* Side skirts round the rear wheels, arch trims and mud flaps. */}
         {sides.map((sx) => (
           <group key={`skirt${sx}`}>
@@ -971,7 +1194,7 @@ export function Ambulance({
               }}
             >
               <group scale={[sx!, 1, 1]}>
-                <Wheel materials={m} dual={sz! < 0} />
+                <Wheel m={m} parts={wheelParts} dual={sz! < 0} />
               </group>
             </group>
           </group>
