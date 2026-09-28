@@ -1,14 +1,17 @@
 import { RoundedBox } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import { CuboidCollider, type RapierRigidBody, RigidBody } from '@react-three/rapier';
-import { useEffect, useMemo, useRef } from 'react';
+import { Suspense, useEffect, useMemo, useRef } from 'react';
 import {
   BackSide,
   CanvasTexture,
   DoubleSide,
+  BufferAttribute,
+  BufferGeometry,
   ExtrudeGeometry,
+  Material,
+  Path,
   type Group,
-  type Material,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
   type PointLight,
@@ -19,6 +22,8 @@ import {
   Vector3,
 } from 'three';
 import type { GameSession } from '@/game/core/GameSession';
+import { applyWear, createWearUniforms } from '@/game/terrawing/vehicleWear';
+import { SurvivorModel } from './SurvivorModel';
 import {
   AMBULANCE_REAR,
   type AmbulancePose,
@@ -211,7 +216,7 @@ function useAmbulanceMaterials() {
       });
     const lamp = (color: string, emissive: string, intensity = 0) =>
       new MeshStandardMaterial({ color, emissive, emissiveIntensity: intensity, roughness: 0.2 });
-    return {
+    const materials = {
       body: paint(),
       side: paint(liveries.side),
       sideMirror: paint(liveries.sideMirror),
@@ -234,6 +239,19 @@ function useAmbulanceMaterials() {
         clearcoat: 1,
         side: DoubleSide,
       }),
+      /** Side windows: tinted but see-through, so the cab and crew show. */
+      window: new MeshPhysicalMaterial({
+        color: '#1a2429',
+        roughness: 0.03,
+        metalness: 0.1,
+        clearcoat: 1,
+        transparent: true,
+        opacity: 0.38,
+        side: DoubleSide,
+        depthWrite: false,
+      }),
+      cabin: new MeshStandardMaterial({ color: '#23272b', roughness: 0.85 }),
+      seat: new MeshStandardMaterial({ color: '#2f3438', roughness: 0.9 }),
       headlight: lamp('#f4f6f8', '#fff3dc', 1.6),
       indicator: lamp('#6a4300', '#ffa21a', 0.2),
       tail: lamp('#4a0806', '#ff1a0c', 0.7),
@@ -242,6 +260,21 @@ function useAmbulanceMaterials() {
       white: lamp('#ffffff', '#ffffff', 0.6),
       ceiling: lamp('#ffffff', '#f4f8ff', 1.2),
     };
+    // Road dust and mud from the ground up, and a wet sheen in rain, like TerraWing.
+    const wear = createWearUniforms();
+    for (const [name, mud] of [
+      ['body', 0.4],
+      ['side', 0.35],
+      ['sideMirror', 0.35],
+      ['cab', 0.4],
+      ['rear', 0.45],
+      ['plastic', 0.55],
+      ['chassis', 0.8],
+      ['tyre', 0.7],
+      ['rim', 0.5],
+    ] as const)
+      applyWear(materials[name], wear, { mud, grain: 0.8, variation: 0.05 });
+    return { ...materials, wear };
   }, [liveries]);
 }
 
@@ -263,6 +296,14 @@ function useCabGeometry() {
     s.quadraticCurveTo(1.9, 2.42, 1.72, 2.44);
     s.lineTo(1.05, 2.44);
     s.lineTo(1.05, 0.52);
+    // Door window openings: see into the cab (and through it, as in a real van).
+    const opening = new Path();
+    opening.moveTo(1.22, 1.46);
+    opening.lineTo(1.22, 2.2);
+    opening.lineTo(1.97, 2.2);
+    opening.lineTo(2.44, 1.46);
+    opening.lineTo(1.22, 1.46);
+    s.holes.push(opening);
     const depth = CAB_WIDTH - 0.1;
     const geometry = new ExtrudeGeometry(s, {
       depth,
@@ -272,9 +313,11 @@ function useCabGeometry() {
       bevelSegments: 4,
       curveSegments: 20,
     });
-    geometry.rotateY(-Math.PI / 2);
-    geometry.translate(depth / 2, 0, 0);
-    geometry.computeVertexNormals();
+    const cabGeometry = splitWindowReveals(geometry);
+    geometry.dispose();
+    cabGeometry.rotateY(-Math.PI / 2);
+    cabGeometry.translate(depth / 2, 0, 0);
+    cabGeometry.computeVertexNormals();
     // Door glass behind the A-pillar.
     const win = new Shape();
     win.moveTo(1.22, 1.46);
@@ -284,8 +327,79 @@ function useCabGeometry() {
     win.lineTo(1.22, 1.46);
     const window = new ShapeGeometry(win);
     window.rotateY(-Math.PI / 2);
-    return { geometry, window };
+    // Side skirts under the patient compartment, cut round the rear wheels.
+    const skirt = new Shape();
+    const bottom = 0.44;
+    const archR = WHEEL_RADIUS + 0.12;
+    const lift = Math.asin(Math.min(1, (bottom - WHEEL_RADIUS) / archR));
+    skirt.moveTo(BOX.rear + 0.05, bottom);
+    skirt.lineTo(REAR_AXLE - Math.cos(lift) * archR, bottom);
+    skirt.absarc(REAR_AXLE, WHEEL_RADIUS, archR, Math.PI - lift, lift, true);
+    skirt.lineTo(BOX.front - 0.1, bottom);
+    skirt.lineTo(BOX.front - 0.1, BOX_FLOOR + 0.02);
+    skirt.lineTo(BOX.rear + 0.05, BOX_FLOOR + 0.02);
+    skirt.lineTo(BOX.rear + 0.05, bottom);
+    const skirtGeometry = new ShapeGeometry(skirt, 12);
+    skirtGeometry.rotateY(-Math.PI / 2);
+    return { geometry: cabGeometry, window, skirt: skirtGeometry };
   }, []);
+}
+
+/**
+ * Re-groups an extruded cab so the walls of the window openings get their own (dark interior)
+ * material: group 0 caps (livery), 1 outer walls (paint), 2 window reveals. Reveal walls face
+ * the opening, i.e. their normal points toward the window's centre.
+ */
+function splitWindowReveals(source: ExtrudeGeometry): BufferGeometry {
+  const geometry = source.index ? source.toNonIndexed() : source.clone();
+  const position = geometry.getAttribute('position') as BufferAttribute;
+  const normal = geometry.getAttribute('normal') as BufferAttribute;
+  const uv = geometry.getAttribute('uv') as BufferAttribute;
+  const caps = source.groups.find((g) => g.materialIndex === 0);
+  const walls = source.groups.find((g) => g.materialIndex === 1);
+  if (!caps || !walls) return geometry;
+  const centre = { x: 1.72, y: 1.83 };
+  const inWindow = (x: number, y: number) => x > 1.12 && x < 2.55 && y > 1.36 && y < 2.3;
+  const order: number[] = [];
+  const reveal: number[] = [];
+  for (let v = caps.start; v < caps.start + caps.count; v += 3) order.push(v);
+  const capsCount = order.length * 3;
+  for (let v = walls.start; v < walls.start + walls.count; v += 3) {
+    let cx = 0;
+    let cy = 0;
+    let nx = 0;
+    let ny = 0;
+    for (let k = 0; k < 3; k++) {
+      cx += position.getX(v + k) / 3;
+      cy += position.getY(v + k) / 3;
+      nx += normal.getX(v + k);
+      ny += normal.getY(v + k);
+    }
+    const facesOpening = nx * (centre.x - cx) + ny * (centre.y - cy) > 0;
+    (inWindow(cx, cy) && facesOpening ? reveal : order).push(v);
+  }
+  const wallsCount = order.length * 3 - capsCount;
+  order.push(...reveal);
+  const out = new BufferGeometry();
+  for (const [name, attr] of [
+    ['position', position],
+    ['normal', normal],
+    ['uv', uv],
+  ] as const) {
+    const size = attr.itemSize;
+    const data = new Float32Array(order.length * 3 * size);
+    order.forEach((v, t) => {
+      for (let k = 0; k < 3; k++)
+        for (let c = 0; c < size; c++)
+          data[(t * 3 + k) * size + c] = attr.array[(v + k) * size + c]!;
+    });
+    out.setAttribute(name, new BufferAttribute(data, size));
+  }
+  out.addGroup(0, capsCount, 0);
+  out.addGroup(capsCount, wallsCount, 1);
+  out.addGroup(capsCount + wallsCount, reveal.length * 3, 2);
+  geometry.dispose();
+  return out;
 }
 
 function Wheel({ materials, dual }: { materials: Materials; dual?: boolean }) {
@@ -332,7 +446,8 @@ export function Ambulance({
 }) {
   const m = useAmbulanceMaterials();
   const cab = useCabGeometry();
-  const cabMaterials = useMemo<Material[]>(() => [m.cab, m.body], [m]);
+  const cabMaterials = useMemo<Material[]>(() => [m.cab, m.body, m.cabin], [m]);
+  const passenger = useRef<Group>(null);
   const body = useRef<RapierRigidBody>(null);
   const tilt = useRef<Group>(null);
   const wheels = useRef<(Group | null)[]>([]);
@@ -349,9 +464,10 @@ export function Ambulance({
 
   useEffect(
     () => () => {
-      for (const material of Object.values(m)) material.dispose();
+      for (const material of Object.values(m)) if (material instanceof Material) material.dispose();
       cab.geometry.dispose();
       cab.window.dispose();
+      cab.skirt.dispose();
     },
     [m, cab],
   );
@@ -368,6 +484,18 @@ export function Ambulance({
     const hl = terrain.heightAt(pose.x + fz * TRACK * 0.5, pose.z - fx * TRACK * 0.5);
     const hrt = terrain.heightAt(pose.x - fz * TRACK * 0.5, pose.z + fx * TRACK * 0.5);
     const y = (hf + hr + hl + hrt) / 4;
+    m.wear.rootY.value = y;
+    m.wear.wetness.value = session.vehicle.state.wetness;
+    // The doctor rides in the passenger seat, and is out of it while helping at TerraWing.
+    if (passenger.current) {
+      const keys = unit.doctor;
+      passenger.current.visible = !(
+        unit.planned &&
+        keys.length > 0 &&
+        t >= keys[0]!.t &&
+        t < keys[keys.length - 1]!.t
+      );
+    }
     body.current?.setNextKinematicTranslation({ x: pose.x, y, z: pose.z });
     body.current?.setNextKinematicRotation(quat.setFromAxisAngle(UP, pose.yaw));
 
@@ -399,11 +527,20 @@ export function Ambulance({
     };
     const a = quad(0);
     const b = quad(0.5);
-    m.blueA.emissiveIntensity = a * 10;
-    m.blueB.emissiveIntensity = b * 10;
-    if (beacons.current[0]) beacons.current[0].intensity = a * 60;
-    if (beacons.current[1]) beacons.current[1].intensity = b * 60;
-    m.headlight.emissiveIntensity = pose.speed > 0.5 ? (cycle < 0.5 ? 3 : 0.5) : 1.6;
+    // On standby at the base the vehicle is switched off: no beacons, no headlights.
+    const live = t >= unit.start ? 1 : 0;
+    m.blueA.emissiveIntensity = a * 10 * live;
+    m.blueB.emissiveIntensity = b * 10 * live;
+    if (beacons.current[0]) beacons.current[0].intensity = a * 60 * live;
+    if (beacons.current[1]) beacons.current[1].intensity = b * 60 * live;
+    m.headlight.emissiveIntensity = live
+      ? pose.speed > 0.5
+        ? cycle < 0.5
+          ? 3
+          : 0.5
+        : 1.6
+      : 0.05;
+    m.tail.emissiveIntensity = live ? 0.7 : 0.08;
     m.ceiling.emissiveIntensity = 0.4 + open * 1.2;
   });
 
@@ -433,13 +570,84 @@ export function Ambulance({
           <mesh
             key={`w${sx}`}
             geometry={cab.window}
-            material={m.glass}
+            material={m.window}
             position={[sx * (CAB_WIDTH / 2 + 0.002), 0, 0]}
           />
         ))}
         <mesh material={m.glass} position={[0, 1.83, 2.33]} rotation={[-0.585, 0, 0]}>
           <planeGeometry args={[CAB_WIDTH - 0.16, 1.1]} />
         </mesh>
+        {/* Cab interior seen through the side windows: dashboard, wheel, seats, crew. */}
+        <mesh material={m.cabin} position={[0, 1.38, 2.36]} rotation={[-0.35, 0, 0]}>
+          <boxGeometry args={[CAB_WIDTH - 0.2, 0.2, 0.45]} />
+        </mesh>
+        <mesh material={m.plastic} position={[-0.45, 1.62, 2.12]} rotation={[-1.05, 0, 0]}>
+          <torusGeometry args={[0.19, 0.022, 8, 24]} />
+        </mesh>
+        {[-0.45, 0.45].map((x) => (
+          <group key={`seat${x}`} position={[x, 0, 1.42]}>
+            <RoundedBox
+              args={[0.5, 0.14, 0.5]}
+              radius={0.05}
+              position={[0, 1.12, 0.15]}
+              material={m.seat}
+            />
+            <RoundedBox
+              args={[0.5, 0.72, 0.12]}
+              radius={0.05}
+              position={[0, 1.52, -0.12]}
+              rotation={[-0.14, 0, 0]}
+              material={m.seat}
+            />
+            <RoundedBox
+              args={[0.28, 0.2, 0.1]}
+              radius={0.04}
+              position={[0, 2.02, -0.2]}
+              material={m.seat}
+            />
+          </group>
+        ))}
+        <Suspense fallback={null}>
+          {/* Driver (right-hand drive) in paramedic green; the doctor rides alongside. */}
+          <group position={[-0.45, 0.72, 1.5]}>
+            <SurvivorModel pose="sitting" jacket="#2f7a44" isCalm={() => true} />
+          </group>
+          <group ref={passenger} position={[0.45, 0.72, 1.5]}>
+            <SurvivorModel pose="sitting" jacket="#f1f2ef" isCalm={() => true} />
+          </group>
+        </Suspense>
+        {/* Wipers parked along the base of the windscreen. */}
+        {[-0.42, 0.34].map((x) => (
+          <mesh
+            key={`wiper${x}`}
+            material={m.plastic}
+            position={[x, 1.42, 2.6]}
+            rotation={[-0.585, 0, 0.08]}
+          >
+            <boxGeometry args={[0.62, 0.018, 0.02]} />
+          </mesh>
+        ))}
+        {/* Side skirts round the rear wheels, arch trims and mud flaps. */}
+        {sides.map((sx) => (
+          <group key={`skirt${sx}`}>
+            <mesh
+              geometry={cab.skirt}
+              material={m.body}
+              position={[sx * (BOX.width / 2 + 0.001), 0, 0]}
+              castShadow
+            />
+            <mesh
+              material={m.plastic}
+              position={[sx * (BOX.width / 2 + 0.02), WHEEL_RADIUS, REAR_AXLE]}
+              rotation={[0, (sx * Math.PI) / 2, 0]}
+            >
+              <torusGeometry args={[WHEEL_RADIUS + 0.12, 0.03, 6, 24, Math.PI]} />
+            </mesh>
+            <mesh material={m.plastic} position={[sx * 0.98, 0.36, REAR_AXLE - 0.62]}>
+              <boxGeometry args={[0.46, 0.4, 0.02]} />
+            </mesh>
+          </group>
+        ))}
         {/* Front: grille, headlight clusters, flashers, bumper, fogs, plate, mirrors. */}
         <RoundedBox
           args={[0.98, 0.3, 0.06]}
@@ -461,6 +669,13 @@ export function Ambulance({
               rotation={[0, sx * 0.22, 0]}
               material={m.headlight}
             />
+            <mesh
+              material={m.white}
+              position={[sx * 0.72, 1.11, 3.33]}
+              rotation={[0, sx * 0.22, 0]}
+            >
+              <boxGeometry args={[0.34, 0.016, 0.012]} />
+            </mesh>
             <mesh material={m.indicator} position={[sx * 0.93, 1.0, 3.26]}>
               <boxGeometry args={[0.08, 0.1, 0.06]} />
             </mesh>

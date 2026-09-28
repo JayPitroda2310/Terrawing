@@ -6,7 +6,7 @@ import {
   samplePolyline,
   type Vec2Tuple,
 } from '@/utils/math/polyline';
-import { clamp01, smoothstep } from '@/utils/math/scalar';
+import { smoothstep } from '@/utils/math/scalar';
 
 /**
  * Patient handover at the extraction LZ, as a deterministic timeline in two stages:
@@ -44,6 +44,11 @@ export interface Key {
 
 export interface HandoverUnit {
   patient: HandoverPatient;
+  /** Sent to the LZ (otherwise waiting on standby at the base). */
+  dispatched: boolean;
+  /** Route distance where it waits parked at the base, and the drive time from there to the LZ. */
+  sParked: number;
+  travel: number;
   /** Ambulance: distance along the route where it parks, and when it sets off / arrives. */
   sStop: number;
   start: number;
@@ -73,12 +78,12 @@ export interface HandoverPlan {
   /** Unit vector from the pad toward the ambulances' parking line. */
   toward: { x: number; z: number };
   units: HandoverUnit[];
+  /** Bumped when units are dispatched (views re-read patients). */
+  version: number;
   /** Handover clock time at which everything has left (Infinity until departure is scheduled). */
   duration: number;
 }
 
-const APPROACH_DISTANCE = 95;
-const APPROACH_TIME = 7.5;
 const DEPART_ACCEL = 2.6;
 const DEPART_MAX_SPEED = 17;
 export const DEPART_TIME = 6.5;
@@ -150,17 +155,69 @@ function pointAlong(line: Polyline, s: number): { x: number; z: number; dx: numb
 export interface HandoverInput {
   /** Centre and radius of the extraction pad the ambulances park beside. */
   pad: { x: number; z: number; radius: number };
-  /** Road centrelines near the LZ (world XZ), nearest is used; empty → straight approach. */
+  /** The rescue base, where the ambulances wait on standby. */
+  base: { x: number; z: number; radius: number };
+  /** Road centrelines (world XZ); the nearest to the pad is used. Empty → cross-country. */
   roads: readonly Polyline[];
-  patients: readonly HandoverPatient[];
-  /** Handover clock time the ambulances are dispatched. */
-  now?: number;
+  /** How many ambulances are on standby (one per casualty expected to need transport). */
+  units: number;
+  /** Is this a good place to park (flat, dry, clear of tents and buildings)? */
+  isClear?: (x: number, z: number) => boolean;
 }
 
-/** Dispatch: ambulance route to the pad's edge and the arrival timing of each unit. */
+const STANDBY_PATIENT: HandoverPatient = { id: '', name: '', jacket: '#c0492a', slotX: 0 };
+
+/**
+ * Standby parking at the base: a clear spot on a ring round the base centre, preferring the side
+ * facing the LZ, with the ambulances nose-to-tail pointing the way they will leave.
+ */
+function chooseParking(
+  base: HandoverInput['base'],
+  toward: { x: number; z: number },
+  length: number,
+  isClear: (x: number, z: number) => boolean,
+): { x: number; z: number; fx: number; fz: number } {
+  const lead = Math.atan2(toward.z - base.z, toward.x - base.x);
+  let best: { x: number; z: number; fx: number; fz: number } | null = null;
+  let bestScore = -Infinity;
+  for (const radius of [base.radius + 7, base.radius + 11, base.radius + 16]) {
+    for (let k = 0; k < 24; k++) {
+      const angle = lead + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 12);
+      const x = base.x + Math.cos(angle) * radius;
+      const z = base.z + Math.sin(angle) * radius;
+      // Point the column tangentially, turning toward the LZ side.
+      const tx = -Math.sin(angle);
+      const tz = Math.cos(angle);
+      const sign = tx * (toward.x - x) + tz * (toward.z - z) >= 0 ? 1 : -1;
+      const fx = tx * sign;
+      const fz = tz * sign;
+      let clear = true;
+      for (let d = -length; d <= 4 && clear; d += 2)
+        for (const side of [-1.4, 0, 1.4])
+          if (!isClear(x + fx * d - fz * side, z + fz * d + fx * side)) clear = false;
+      if (!clear) continue;
+      const facing = Math.cos(angle - lead);
+      const score = facing * 2 - radius * 0.05;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x, z, fx, fz };
+      }
+    }
+  }
+  if (best) return best;
+  const d = Math.hypot(toward.x - base.x, toward.z - base.z) || 1;
+  const fx = (toward.x - base.x) / d;
+  const fz = (toward.z - base.z) / d;
+  return { x: base.x + fx * (base.radius + 8), z: base.z + fz * (base.radius + 8), fx, fz };
+}
+
+/**
+ * Standby: the ambulances parked at the base, and their route to the LZ (out of the base, along
+ * the road, into the pad's edge) and on to hospital. Nobody moves until `dispatchUnits`.
+ */
 export function createHandoverPlan(input: HandoverInput): HandoverPlan {
-  const { pad } = input;
-  const now = input.now ?? 0;
+  const { pad, base } = input;
+  const count = Math.max(1, Math.min(2, input.units));
   const projection = createProjection();
   let best: { line: Polyline; s: number; x: number; z: number; d: number } | null = null;
   for (const line of input.roads) {
@@ -176,67 +233,95 @@ export function createHandoverPlan(input: HandoverInput): HandoverPlan {
     }
   }
 
-  // Direction from the pad toward the road (or an arbitrary side when there is none).
-  let ux = 1;
-  let uz = 0;
+  // Parking spot at the pad's edge, on the road side (or the base side with no road).
+  let ux: number;
+  let uz: number;
   if (best && best.d > 1) {
     ux = (best.x - pad.x) / best.d;
     uz = (best.z - pad.z) / best.d;
-  }
-  let fx: number;
-  let fz: number;
-  if (best) {
-    const here = pointAlong(best.line, best.s);
-    fx = here.dx;
-    fz = here.dz;
   } else {
-    fx = -uz;
-    fz = ux;
+    const d = Math.hypot(base.x - pad.x, base.z - pad.z) || 1;
+    ux = (base.x - pad.x) / d;
+    uz = (base.z - pad.z) / d;
   }
-  // Park parallel to the road just off the pad's edge (clear of wherever TerraWing set down).
   const edge = pad.radius + 2.6;
   const standOff = best ? Math.min(edge, Math.max(4, best.d - 1)) : edge;
   const px = pad.x + ux * standOff;
   const pz = pad.z + uz * standOff;
 
-  let points: Vec2Tuple[];
-  if (best && best.d > standOff + 2) {
-    // Along the road, turn off to the pad, and back onto the road afterwards.
-    const lead = 22 + best.d * 0.4;
-    const inS = best.s - lead;
-    const outS = best.s + lead;
-    const before: Vec2Tuple[] = [];
-    for (let s = inS - APPROACH_DISTANCE - 40; s <= inS; s += 6) {
+  const column = (count - 1) * CONVOY_GAP;
+  const parking = chooseParking(base, pad, column + 7, input.isClear ?? (() => true));
+  // The rear-most ambulance starts the route; the lead one is `column` metres further on.
+  const startX = parking.x - parking.fx * column;
+  const startZ = parking.z - parking.fz * column;
+
+  const points: Vec2Tuple[] = [[startX, startZ]];
+  if (column > 0) points.push([parking.x, parking.z]);
+  let fx: number;
+  let fz: number;
+  const join = createProjection();
+  if (best) projectOnPolyline(best.line, parking.x, parking.z, join);
+  const sJoin = best ? join.t * best.line.length : 0;
+  const lead = best ? 22 + best.d * 0.4 : 0;
+  const dir = best ? (best.s >= sJoin ? 1 : -1) : 1;
+  const inS = best ? best.s - dir * lead : 0;
+  const outS = best ? best.s + dir * lead : 0;
+  if (best && best.d > standOff + 2 && (inS - sJoin) * dir > 16 && join.distance < 90) {
+    // Out of the base onto the road, along it, into the LZ; afterwards back to the road and on.
+    const on = pointAlong(best.line, sJoin + dir * 10);
+    points.push(
+      ...bezier(
+        parking.x,
+        parking.z,
+        parking.fx,
+        parking.fz,
+        on.x,
+        on.z,
+        on.dx * dir,
+        on.dz * dir,
+        Math.max(6, join.distance * 0.7),
+      ),
+    );
+    for (let s = sJoin + dir * 16; (inS - s) * dir > 0; s += dir * 6) {
       const p = pointAlong(best.line, s);
-      before.push([p.x, p.z]);
+      points.push([p.x, p.z]);
     }
     const a = pointAlong(best.line, inS);
     const b = pointAlong(best.line, outS);
+    const here = pointAlong(best.line, best.s);
+    fx = here.dx * dir;
+    fz = here.dz * dir;
     const reach = Math.max(6, best.d * 0.6);
-    const into = bezier(a.x, a.z, a.dx, a.dz, px, pz, fx, fz, reach);
-    const outOf = bezier(px, pz, fx, fz, b.x, b.z, b.dx, b.dz, reach);
-    const after: Vec2Tuple[] = [];
-    for (let s = outS + 6; s <= outS + 220; s += 6) {
+    points.push(...bezier(a.x, a.z, a.dx * dir, a.dz * dir, px, pz, fx, fz, reach));
+    points.push(...bezier(px, pz, fx, fz, b.x, b.z, b.dx * dir, b.dz * dir, reach));
+    for (let s = outS + dir * 6; (outS + dir * 220 - s) * dir > 0; s += dir * 6) {
       const p = pointAlong(best.line, s);
-      after.push([p.x, p.z]);
+      points.push([p.x, p.z]);
     }
-    points = [...before, ...into, ...outOf, ...after];
   } else {
-    points = [];
-    for (let s = -APPROACH_DISTANCE - 60; s <= 240; s += 6) points.push([px + fx * s, pz + fz * s]);
+    // Cross-country: straight from the base to the pad's edge, then onward.
+    const d = Math.hypot(px - parking.x, pz - parking.z) || 1;
+    fx = (px - parking.x) / d;
+    fz = (pz - parking.z) / d;
+    points.push(...bezier(parking.x, parking.z, parking.fx, parking.fz, px, pz, fx, fz, d * 0.4));
+    for (let s = 6; s <= 220; s += 6) points.push([px + fx * s, pz + fz * s]);
   }
   const route = createPolyline(points);
   const park = createProjection();
   projectOnPolyline(route, px, pz, park);
   const sPark = park.t * route.length;
 
-  const units = input.patients.slice(0, 2).map<HandoverUnit>((patient, k) => {
-    const start = now + k * 2.6;
+  const units = Array.from({ length: count }, (_, k): HandoverUnit => {
+    const sParked = (count - 1 - k) * CONVOY_GAP;
+    const sStop = sPark - k * CONVOY_GAP;
     return {
-      patient,
-      sStop: sPark - k * CONVOY_GAP,
-      start,
-      arrive: start + APPROACH_TIME,
+      patient: STANDBY_PATIENT,
+      dispatched: false,
+      sParked,
+      sStop,
+      travel: travelTime(sStop - sParked),
+      start: Infinity,
+      arrive: Infinity,
       depart: Infinity,
       planned: false,
       doorsOpen: Infinity,
@@ -247,7 +332,7 @@ export function createHandoverPlan(input: HandoverInput): HandoverPlan {
       liftEnd: Infinity,
       canopyOpen: Infinity,
       canopyClose: Infinity,
-      slotX: patient.slotX,
+      slotX: 0,
       trolley: [],
       doctor: [],
     };
@@ -257,8 +342,50 @@ export function createHandoverPlan(input: HandoverInput): HandoverPlan {
     drover: { x: pad.x, z: pad.z, heading: 0 },
     toward: { x: ux, z: uz },
     units,
+    version: 0,
     duration: Infinity,
   };
+}
+
+/** Drive profile from standstill: accelerate, cruise, brake to a stop over `distance` metres. */
+const DRIVE = { accel: 2.4, cruise: 15, brake: 3.6 };
+
+function driveProfile(distance: number) {
+  const { accel, brake } = DRIVE;
+  let v = DRIVE.cruise;
+  if ((v * v) / (2 * accel) + (v * v) / (2 * brake) > distance)
+    v = Math.sqrt((2 * distance * accel * brake) / (accel + brake));
+  const tAcc = v / accel;
+  const tDec = v / brake;
+  const dAcc = (v * v) / (2 * accel);
+  const dDec = (v * v) / (2 * brake);
+  const tCruise = Math.max(0, (distance - dAcc - dDec) / v);
+  return { v, tAcc, tCruise, tDec, dAcc };
+}
+
+function travelTime(distance: number): number {
+  const p = driveProfile(Math.max(1, distance));
+  return p.tAcc + p.tCruise + p.tDec;
+}
+
+/**
+ * Sends the standby ambulances to the LZ, one per casualty aboard, a moment apart. Any extra
+ * ambulance stays parked.
+ */
+export function dispatchUnits(
+  plan: HandoverPlan,
+  patients: readonly HandoverPatient[],
+  now: number,
+): void {
+  patients.slice(0, plan.units.length).forEach((patient, k) => {
+    const unit = plan.units[k]!;
+    unit.patient = patient;
+    unit.slotX = patient.slotX;
+    unit.dispatched = true;
+    unit.start = now + k * 1.5;
+    unit.arrive = unit.start + unit.travel;
+  });
+  plan.version++;
 }
 
 /**
@@ -286,6 +413,7 @@ export function planTransfer(
   }
 
   plan.units.forEach((unit, k) => {
+    if (!unit.dispatched) return;
     const at = pointAlong(plan.route, unit.sStop);
     const vehicleYaw = yawOf(at.dx, at.dz);
     const base = Math.max(unit.arrive, now) + k * 0.8;
@@ -400,16 +528,19 @@ export function planTransfer(
 
 /** Handover clock time when every patient is loaded and every door shut. */
 export function transferDoneAt(plan: HandoverPlan): number {
-  if (!plan.units.every((u) => u.planned)) return Infinity;
-  return Math.max(...plan.units.map((u) => u.doorsClose + DOOR_SWING));
+  const sent = plan.units.filter((u) => u.dispatched);
+  if (sent.length === 0 || !sent.every((u) => u.planned)) return Infinity;
+  return Math.max(...sent.map((u) => u.doorsClose + DOOR_SWING));
 }
 
 /** The ambulances leave for hospital, one after the other, starting at `now`. */
 export function scheduleDeparture(plan: HandoverPlan, now: number): void {
   plan.units.forEach((unit, k) => {
+    if (!unit.dispatched) return;
     unit.depart = Math.max(now + 0.6 + k * 1.8, unit.doorsClose + DOOR_SWING + 0.3);
   });
-  plan.duration = Math.max(...plan.units.map((u) => u.depart)) + DEPART_TIME;
+  plan.duration =
+    Math.max(...plan.units.filter((u) => u.dispatched).map((u) => u.depart)) + DEPART_TIME;
 }
 
 export interface AmbulancePose {
@@ -429,13 +560,24 @@ export function ambulanceAt(plan: HandoverPlan, unit: HandoverUnit, t: number, o
   let s: number;
   let speed = 0;
   let accel = 0;
-  const approach = Math.min(APPROACH_DISTANCE, unit.sStop);
-  if (t < unit.arrive) {
-    const tau = clamp01((t - unit.start) / APPROACH_TIME);
-    const rest = 1 - tau;
-    s = unit.sStop - approach * rest * rest;
-    speed = ((2 * approach) / APPROACH_TIME) * rest;
-    accel = -(2 * approach) / (APPROACH_TIME * APPROACH_TIME);
+  if (t < unit.start) {
+    s = unit.sParked;
+  } else if (t < unit.arrive) {
+    const p = driveProfile(unit.sStop - unit.sParked);
+    const dt = t - unit.start;
+    if (dt < p.tAcc) {
+      s = unit.sParked + 0.5 * DRIVE.accel * dt * dt;
+      speed = DRIVE.accel * dt;
+      accel = DRIVE.accel;
+    } else if (dt < p.tAcc + p.tCruise) {
+      s = unit.sParked + p.dAcc + p.v * (dt - p.tAcc);
+      speed = p.v;
+    } else {
+      const left = Math.max(0, unit.arrive - t);
+      s = unit.sStop - 0.5 * DRIVE.brake * left * left;
+      speed = DRIVE.brake * left;
+      accel = -DRIVE.brake;
+    }
   } else if (t < unit.depart) {
     s = unit.sStop;
   } else {
@@ -457,7 +599,7 @@ export function ambulanceAt(plan: HandoverPlan, unit: HandoverUnit, t: number, o
   out.speed = speed;
   out.accel = accel;
   out.s = s;
-  out.visible = t >= unit.start;
+  out.visible = true;
   return out;
 }
 

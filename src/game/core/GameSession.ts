@@ -29,6 +29,7 @@ import type { FailureReason, GameEvents } from './GameEvents';
 import { GameplayStateMachine, type CinematicShotId, type VehicleMode } from './GameState';
 import {
   createHandoverPlan,
+  dispatchUnits,
   type HandoverPlan,
   planTransfer,
   scheduleDeparture,
@@ -584,7 +585,9 @@ export class GameSession {
     ctx.mode = this.hasPlayerControl() ? s.mode : null;
     ctx.extractionBlocked =
       this.vehicle.state.passengers > 0 ||
-      (this.handover !== null && this.handoverTime < transferDoneAt(this.handover));
+      (this.handover !== null &&
+        this.handover.units.some((u) => u.dispatched) &&
+        this.handoverTime < transferDoneAt(this.handover));
 
     const update = this.missionManager.update(dt, ctx);
     for (const objective of update.completed) {
@@ -669,6 +672,7 @@ export class GameSession {
   /** Handover clock (s since the ambulances were dispatched). */
   handoverTime = 0;
   private handoverStep = 0;
+  private standbyChecked = false;
 
   /** TerraWing must stay put while the medical team works on it. */
   get handoverHold(): boolean {
@@ -678,37 +682,76 @@ export class GameSession {
     );
   }
 
+  /**
+   * Standby ambulances at the base for missions with casualties who will need transport; null
+   * when every survivor can walk out.
+   */
+  private createStandby(): HandoverPlan | null {
+    const injured = this.mission.survivors.filter((v) => v.condition !== 'stable').length;
+    const pad = this.zones.get(this.mission.extractionZoneId);
+    const base = this.zones.get('base');
+    if (injured === 0 || !pad || !base) return null;
+    const lines = (kind: 'road' | 'trail') =>
+      this.terrain.data.paths.filter((p) => p.kind === kind).map((p) => p.line);
+    const roads = lines('road');
+    const normal = { x: 0, y: 1, z: 0 };
+    const obstacles = this.environment.structures
+      .filter((st) => st.kind !== 'flag' && st.kind !== 'windsock')
+      .map((st) => ({ x: st.position[0], z: st.position[1], r: 6 * st.scale }));
+    return createHandoverPlan({
+      pad: { x: pad.position.x, z: pad.position.z, radius: pad.definition.radius },
+      base: { x: base.position.x, z: base.position.z, radius: base.definition.radius },
+      roads: roads.length > 0 ? roads : lines('trail'),
+      units: injured,
+      isClear: (x, z) => {
+        if (this.terrain.waterLevelAt(x, z) !== null) return false;
+        this.terrain.normalAt(x, z, normal);
+        if (normal.y < 0.97) return false;
+        for (const zone of this.zones.values()) if (zone.contains(x, z, 2)) return false;
+        return obstacles.every((o) => Math.hypot(x - o.x, z - o.z) > o.r);
+      },
+    });
+  }
+
   private updateHandover(dt: number): void {
     const s = this.vehicle.state;
     const zone = this.zones.get(this.mission.extractionZoneId);
     if (!this.handover) {
-      if (this.phase !== 'active' || !zone || this.survivors.passengers === 0) return;
-      if (!zone.contains(s.position.x, s.position.z)) return;
-      const lines = (kind: 'road' | 'trail') =>
-        this.terrain.data.paths.filter((p) => p.kind === kind).map((p) => p.line);
-      const roads = lines('road');
+      if (this.standbyChecked) return;
+      this.standbyChecked = true;
+      this.handover = this.createStandby();
+      this.handoverTime = 0;
+      this.handoverStep = 0;
+      if (!this.handover) return;
+    }
+    const plan = this.handover;
+    this.handoverTime += dt;
+    const t = this.handoverTime;
+    // Casualties aboard at the LZ: the standby ambulances leave the base for it.
+    const dispatched = plan.units.some((u) => u.dispatched);
+    if (
+      !dispatched &&
+      this.phase === 'active' &&
+      this.survivors.passengers > 0 &&
+      zone?.contains(s.position.x, s.position.z)
+    ) {
       const aboard = this.survivors.survivors.filter((v) => v.onBoard);
-      this.handover = createHandoverPlan({
-        pad: { x: zone.position.x, z: zone.position.z, radius: zone.definition.radius },
-        roads: roads.length > 0 ? roads : lines('trail'),
-        patients: aboard.map((v, i) => ({
+      dispatchUnits(
+        plan,
+        aboard.map((v, i) => ({
           id: v.definition.id,
           name: v.definition.name,
           jacket: SURVIVOR_JACKETS[v.definition.callsign] ?? '#c0492a',
           slotX: s.capsules[i]?.x ?? 0,
         })),
-      });
-      this.handoverTime = 0;
-      this.handoverStep = 0;
-      this.notify('AMBULANCE DISPATCHED TO THE LZ — LAND AND SWITCH TO ROVER', 'info');
-      return;
+        t,
+      );
+      const eta = Math.round(plan.units[0]!.travel);
+      this.notify(`AMBULANCE LEAVING BASE — ETA ${eta} S. LAND AND SWITCH TO ROVER`, 'info');
     }
-    const plan = this.handover;
-    this.handoverTime += dt;
-    const t = this.handoverTime;
     // The transfer starts once TerraWing is parked in the LZ as a rover.
     if (
-      !plan.units[0]!.planned &&
+      plan.units.some((u) => u.dispatched && !u.planned) &&
       this.phase === 'active' &&
       zone?.contains(s.position.x, s.position.z) &&
       this.gameplay.kind === 'ROVER' &&
@@ -720,8 +763,9 @@ export class GameSession {
       this.notify('HOLD POSITION — MEDICAL TEAM COMING TO TERRAWING', 'warning');
     }
     // Casualties leave TerraWing as the team lifts each capsule off.
-    const aboard = plan.units.filter((u) => !(t >= u.liftEnd)).length;
-    if (s.passengers !== aboard) {
+    const sent = plan.units.filter((u) => u.dispatched);
+    const aboard = sent.filter((u) => !(t >= u.liftEnd)).length;
+    if (sent.length > 0 && s.passengers !== aboard) {
       s.passengers = aboard;
       this.notify('PATIENT TRANSFERRED TO THE MEDICAL TEAM', 'success');
     }

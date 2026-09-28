@@ -215,11 +215,14 @@ function HandoverUnitView({
   session,
   plan,
   unit,
+  jacket,
   getAnchor,
 }: {
   session: GameSession;
   plan: HandoverPlan;
   unit: HandoverUnit;
+  /** Patient's jacket (known once dispatched). */
+  jacket: string;
   getAnchor: () => Object3D | null;
 }) {
   const trolley = useRef<Group>(null);
@@ -360,7 +363,7 @@ function HandoverUnitView({
         <Trolley mattress={mattress} />
       </group>
       <group ref={capsule}>
-        <CasualtyCapsule jacket={unit.patient.jacket} getCanopy={() => canopy.value} />
+        <CasualtyCapsule jacket={jacket} getCanopy={() => canopy.value} />
       </group>
       {([1, -1] as const).map((end) => (
         <CrewMember
@@ -394,16 +397,20 @@ export function HandoverScene({
   getVisualRoot: () => Object3D | null;
 }) {
   const [plan, setPlan] = useState<HandoverPlan | null>(null);
+  const [version, setVersion] = useState(-1);
   useFrame(() => {
     if (session.handover !== plan) setPlan(session.handover);
+    const v = session.handover?.version ?? -1;
+    if (v !== version) setVersion(v);
   });
   if (!plan) return null;
   const getAnchor = () => getVisualRoot()?.getObjectByName('casualty-pod') ?? null;
   return (
     <Suspense fallback={null}>
-      {plan.units.map((unit) => (
+      {plan.units.map((unit, k) => (
         <HandoverUnitView
-          key={unit.patient.id}
+          key={k}
+          jacket={unit.patient.jacket}
           session={session}
           plan={plan}
           unit={unit}
