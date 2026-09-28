@@ -1,3 +1,4 @@
+import { useProgress } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import { useBeforePhysicsStep } from '@react-three/rapier';
 import { useEffect, useMemo, useRef } from 'react';
@@ -8,8 +9,11 @@ import type { GameManager } from './GameManager';
 import type { GameSession } from './GameSession';
 import { Screen } from './GameState';
 
-/** Frames to render after the vehicle attaches before handing control over (shader warm-up). */
-const WARMUP_FRAMES = 8;
+/**
+ * Frames to render, once everything has loaded, before handing control over: the first frames
+ * build and compile the world's shaders, so they happen behind the loading screen.
+ */
+const WARMUP_FRAMES = 20;
 
 /**
  * Bridges the render loop and the simulation:
@@ -18,8 +22,6 @@ const WARMUP_FRAMES = 8;
  */
 export function GameLoop({ session, manager }: { session: GameSession; manager: GameManager }) {
   const warmup = useRef(0);
-  /** Parallel shader pre-compilation: idle → running → done. */
-  const compile = useRef<'idle' | 'running' | 'done'>('idle');
   const director = useMemo(() => new GameAudioDirector(session, manager.audio), [session, manager]);
   const forward = useMemo(() => new Vector3(), []);
   const listener = useMemo(() => ({ x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: -1 }), []);
@@ -30,18 +32,15 @@ export function GameLoop({ session, manager }: { session: GameSession; manager: 
     session.fixedUpdate(world.timestep);
   });
 
-  useFrame(({ camera, gl, scene }, dt) => {
+  useFrame(({ camera }, dt) => {
     manager.onFrame(dt);
 
     if (useGameStore.getState().screen === Screen.LOADING && session.ready) {
-      // Compile every material the world uses, in parallel, before the player takes over.
-      if (compile.current === 'idle') {
-        compile.current = 'running';
-        gl.compileAsync(scene, camera)
-          .catch(() => undefined)
-          .finally(() => (compile.current = 'done'));
+      // Wait until every texture and model has finished loading (loaders still busy → restart).
+      if (useProgress.getState().active) {
+        warmup.current = 0;
+        return;
       }
-      if (compile.current !== 'done') return;
       warmup.current++;
       if (warmup.current >= WARMUP_FRAMES) manager.onWorldReady(session);
     }

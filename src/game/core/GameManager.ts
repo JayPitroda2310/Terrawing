@@ -18,10 +18,6 @@ import { formatDistance } from '@/utils/helpers/format';
 import { logger } from '@/utils/helpers/logger';
 import { IntervalGate } from '@/utils/performance/throttle';
 import { GameSession } from './GameSession';
-import { prefetchWorldAssets } from '@/services/loading/prefetch';
-
-/** Mount the world anyway if the asset download stalls this long. */
-const PREFETCH_TIMEOUT_MS = 90_000;
 import { isMissionScreen, Screen } from './GameState';
 
 const TELEMETRY_INTERVAL = 0.1;
@@ -36,9 +32,6 @@ const PAUSE_DEBOUNCE_MS = 250;
  * and translates between the gameplay layer and the React stores.
  */
 export class GameManager {
-  /** Session waiting for its assets before the world mounts. */
-  private pendingSession: GameSession | null = null;
-
   readonly input = new InputManager();
   readonly audio = new AudioManager();
   readonly music = new MusicManager(this.audio);
@@ -119,7 +112,6 @@ export class GameManager {
       return;
     }
     useGameStore.getState().setSelectedMission(missionId);
-    prefetchWorldAssets();
     this.navigate(Screen.MISSION_BRIEFING);
   }
 
@@ -144,20 +136,9 @@ export class GameManager {
       });
       useMissionStore.getState().reset();
       store.setLastResult(null);
+      store.setSession(session);
+      this.bindSession(session);
       this.navigate(Screen.LOADING);
-      // Mount the world only once its assets are local: it then builds (and compiles its shaders)
-      // in a single pass instead of rebuilding materials as each texture trickles in.
-      const pending = (this.pendingSession = session);
-      void Promise.race([
-        prefetchWorldAssets().done,
-        new Promise<void>((resolve) => setTimeout(resolve, PREFETCH_TIMEOUT_MS)),
-      ]).then(() => {
-        const now = useGameStore.getState();
-        if (this.pendingSession !== pending || now.screen !== Screen.LOADING) return;
-        this.pendingSession = null;
-        now.setSession(session);
-        this.bindSession(session);
-      });
     } catch (error) {
       logger.error('mission', 'Failed to create mission session', error);
       store.setFatalError(error instanceof Error ? error.message : String(error));
@@ -199,7 +180,6 @@ export class GameManager {
   }
 
   quitToMenu(): void {
-    this.pendingSession = null;
     narrator.cancel();
     useGameStore.getState().setControlsIntro(false);
     this.endSession();

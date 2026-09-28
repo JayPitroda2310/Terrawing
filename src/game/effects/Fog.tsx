@@ -28,17 +28,14 @@ if (ShaderChunk.fog_fragment.includes(FOG_MIX)) {
   );
 }
 
-/**
- * Exponential scene fog. Density comes from the weather system. The scene keeps one FogExp2 for
- * its whole life (created with the canvas) and this only updates its colour and density: swapping
- * fog objects in and out would change every lit material's shader variant (fog / no fog), forcing
- * the whole world to recompile its shaders at once.
- */
+/** Exponential scene fog. Density comes from the weather system. */
 export function Fog({ color, getDensity }: { color: string; getDensity: () => number }) {
   const scene = useThree((s) => s.scene);
   useEffect(() => {
-    if (scene.fog instanceof FogExp2) scene.fog.color.set(color);
-    else scene.fog = new FogExp2(new Color(color), getDensity());
+    scene.fog = new FogExp2(new Color(color), getDensity());
+    return () => {
+      scene.fog = null;
+    };
   }, [scene, color, getDensity]);
   // Density follows the evolving weather.
   useFrame(() => {

@@ -2,7 +2,7 @@ import { PerformanceMonitor } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Physics } from '@react-three/rapier';
 import { Suspense, useCallback, useMemo, useState } from 'react';
-import { ACESFilmicToneMapping, PCFShadowMap, FogExp2 } from 'three';
+import { ACESFilmicToneMapping, PCFShadowMap } from 'three';
 import { useGameManager } from '@/app/GameManagerContext';
 import { getEnvironment } from '@/data/environments';
 import { GRAPHICS_PROFILES } from '@/data/graphics';
@@ -19,7 +19,6 @@ import { useSettingsStore } from '@/store/settingsStore';
 import { RenderStatsProbe } from '@/ui/debug/RenderStatsProbe';
 import { MENU_FOCUS } from './menuConfig';
 import { MenuScene } from './MenuScene';
-import { AsyncShaderCompiler } from './AsyncShaderCompiler';
 import { MissionScene } from './MissionScene';
 
 const PHYSICS_STEP = 1 / 60;
@@ -130,11 +129,6 @@ export function GameCanvas() {
       }}
       onCreated={(state) => {
         manager.input.mouse.attach(state.gl.domElement);
-        // Checking every shader for errors forces the browser to finish each compile before
-        // starting the next; production skips it so shaders compile in parallel.
-        state.gl.debug.checkShaderErrors = import.meta.env.DEV;
-        // One fog for the canvas's lifetime (see Fog): shader variants never flip fog on/off.
-        state.scene.fog = new FogExp2('#b9c3c9', 0.0025);
         // Development-only handle for inspecting the scene from automated checks.
         if (import.meta.env.DEV) (window as unknown as { __twThree?: unknown }).__twThree = state;
       }}
@@ -143,7 +137,6 @@ export function GameCanvas() {
       }}
       className="!absolute inset-0"
     >
-      <AsyncShaderCompiler offscreen={graphics.bloom} />
       <PerformanceMonitor
         onDecline={() =>
           setDpr({
