@@ -18,7 +18,17 @@ import { formatDistance } from '@/utils/helpers/format';
 import { logger } from '@/utils/helpers/logger';
 import { IntervalGate } from '@/utils/performance/throttle';
 import { GameSession } from './GameSession';
+import type { MissionDefinition } from '@/game/missions/MissionDefinition';
 import { resetLoadProgress } from '@/services/loading/loadProgress';
+
+/** Runs `work` once the browser has painted the current frame (so a loading screen shows first). */
+function afterPaint(work: () => void): void {
+  if (typeof requestAnimationFrame === 'undefined') {
+    setTimeout(work, 0);
+    return;
+  }
+  requestAnimationFrame(() => requestAnimationFrame(work));
+}
 import { isMissionScreen, Screen } from './GameState';
 
 const TELEMETRY_INTERVAL = 0.1;
@@ -33,6 +43,9 @@ const PAUSE_DEBOUNCE_MS = 250;
  * and translates between the gameplay layer and the React stores.
  */
 export class GameManager {
+  /** Guards deferred screen transitions (a newer one cancels an older one). */
+  private transition = 0;
+
   readonly input = new InputManager();
   readonly audio = new AudioManager();
   readonly music = new MusicManager(this.audio);
@@ -124,8 +137,21 @@ export class GameManager {
       store.setFatalError(`Mission data is invalid:\n${result.errors.join('\n')}`);
       return;
     }
+    // Show the loading screen first, and build the mission once it has painted: tearing down
+    // the old world and mounting the new one is heavy, and would otherwise freeze whatever
+    // screen the player just clicked on (briefing, mission report).
+    resetLoadProgress();
+    this.navigate(Screen.LOADING);
+    const token = ++this.transition;
+    afterPaint(() => {
+      if (token !== this.transition) return;
+      this.startSession(result.mission);
+    });
+  }
+
+  private startSession(mission: MissionDefinition): void {
+    const store = useGameStore.getState();
     this.endSession();
-    const mission = result.mission;
     try {
       const environment = getEnvironment(mission.environment);
       const session = new GameSession({
@@ -139,9 +165,6 @@ export class GameManager {
       store.setLastResult(null);
       store.setSession(session);
       this.bindSession(session);
-      // Fresh, data-weighted progress for this loading screen.
-      resetLoadProgress();
-      this.navigate(Screen.LOADING);
     } catch (error) {
       logger.error('mission', 'Failed to create mission session', error);
       store.setFatalError(error instanceof Error ? error.message : String(error));
@@ -151,7 +174,11 @@ export class GameManager {
   /** Called by the world once physics and the vehicle body are ready. */
   onWorldReady(session: GameSession): void {
     const store = useGameStore.getState();
+    // Only a session that is still loading: while a restart's loading screen is up, the old
+    // (already running or ended) session is still mounted for a frame or two and must not be
+    // handed back to the player.
     if (store.session !== session || store.screen !== Screen.LOADING) return;
+    if (session.phase !== 'loading') return;
     session.start();
     this.publishObjectives(session);
     // Show the controls demo before play starts (skipped for automated browser tests).
@@ -184,9 +211,18 @@ export class GameManager {
 
   quitToMenu(): void {
     narrator.cancel();
-    useGameStore.getState().setControlsIntro(false);
-    this.endSession();
-    this.navigate(Screen.MAIN_MENU);
+    const store = useGameStore.getState();
+    store.setControlsIntro(false);
+    // Back to the menu behind the loading screen: it stays up until the 3D backdrop has been
+    // rebuilt, compiled and is running (see BackdropReady), so nothing freezes on screen.
+    resetLoadProgress();
+    store.setBackdropReady(false);
+    const token = ++this.transition;
+    afterPaint(() => {
+      if (token !== this.transition) return;
+      this.endSession();
+      this.navigate(Screen.MAIN_MENU);
+    });
   }
 
   openSettings(): void {

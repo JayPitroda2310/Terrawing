@@ -1,8 +1,8 @@
 import { useProgress } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
-import { useMemo } from 'react';
+import { useRef } from 'react';
 import { useLoadStore } from '@/services/loading/loadProgress';
-import { createWarmupGate, stepWarmupGate } from '@/services/loading/sceneWarmup';
+import { createWarmupGate, stepWarmupGate, type WarmupGate } from '@/services/loading/sceneWarmup';
 import { GRAPHICS_PROFILES } from '@/data/graphics';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useGameStore } from '@/store/gameStore';
@@ -16,15 +16,29 @@ const SETTLE_FRAMES = 6;
  * render a few frames and signals that the loading screen can lift onto a smoothly running scene.
  */
 export function BackdropReady() {
-  const gate = useMemo(createWarmupGate, []);
+  const gate = useRef<WarmupGate | null>(null);
   useFrame(({ gl, scene, camera }) => {
     const store = useGameStore.getState();
-    if (store.backdropReady || store.session) return;
+    if (store.backdropReady) {
+      gate.current = null;
+      return;
+    }
+    if (store.session) return;
+    gate.current ??= createWarmupGate();
     const { active, total } = useProgress.getState();
     const report = (build: number) => useLoadStore.setState({ build });
     const bloom = GRAPHICS_PROFILES[useSettingsStore.getState().settings.graphics].bloom;
     if (
-      stepWarmupGate(gate, gl, scene, camera, active || total === 0, SETTLE_FRAMES, report, bloom)
+      stepWarmupGate(
+        gate.current,
+        gl,
+        scene,
+        camera,
+        active || total === 0,
+        SETTLE_FRAMES,
+        report,
+        bloom,
+      )
     )
       store.setBackdropReady(true);
   });
